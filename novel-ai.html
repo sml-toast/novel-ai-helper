@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NovelForge AI · 小说 AI 助手</title>
+  <meta name="description" content="小说 AI 助手工作台：章节写作、AI 同步辅助、知识库、人物关系、情节校验与定时推送。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./novel-ai.css" />
+  <script type="module" src="./novel-ai.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="项目与章节">
+      <a class="brand" href="./index.html" aria-label="返回博客首页">
+        <span class="brand-mark">NF</span>
+        <span>
+          <strong>NovelForge AI</strong>
+          <small>小说创作智能工作台</small>
+        </span>
+      </a>
+
+      <section class="panel compact">
+        <div class="panel-head">
+          <span>当前项目</span>
+          <button class="ghost-btn" type="button" data-action="new-project">新建</button>
+        </div>
+        <div class="project-card active">
+          <span class="project-badge">玄幻</span>
+          <h2>雾港星火</h2>
+          <p>蒸汽都市、秘仪学院、失忆调查员</p>
+        </div>
+      </section>
+
+      <section class="panel compact grow">
+        <div class="panel-head">
+          <span>章节存稿</span>
+          <button class="ghost-btn" type="button" data-action="save-draft">存稿</button>
+        </div>
+        <div class="chapter-list" id="chapterList"></div>
+      </section>
+
+      <section class="panel compact">
+        <div class="metric-grid">
+          <div>
+            <strong id="wordCount">0</strong>
+            <span>本章字数</span>
+          </div>
+          <div>
+            <strong>82%</strong>
+            <span>情节一致</span>
+          </div>
+          <div>
+            <strong>4</strong>
+            <span>伏笔待回收</span>
+          </div>
+          <div>
+            <strong>2</strong>
+            <span>待推送</span>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="workspace" aria-label="小说写作工作区">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">AI Writing Copilot</span>
+          <h1>小说 AI 助手全栈产品原型</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="secondary-btn" type="button" data-open-panel="knowledge">知识库</button>
+          <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
+          <button class="primary-btn" type="button" data-action="run-sync-ai">同步辅助</button>
+        </div>
+      </header>
+
+      <section class="hero-grid" aria-label="核心能力概览">
+        <article class="hero-card gradient-card">
+          <span>今日写作目标</span>
+          <h2>完成第 12 章冲突爆点，并回收“黑潮钟声”伏笔。</h2>
+          <p>AI 已汇总前后文、角色动机、知识库线索与平台风险，准备辅助续写。</p>
+        </article>
+        <article class="hero-card">
+          <span>AI 状态</span>
+          <h3>OpenAI-compatible 网关</h3>
+          <p>baseURL / apiKey / model 由服务端托管，前端仅展示任务结果。</p>
+        </article>
+        <article class="hero-card">
+          <span>发布队列</span>
+          <h3>今晚 21:30</h3>
+          <p>第 10 章将推送至模拟平台，失败后自动重试 3 次。</p>
+        </article>
+      </section>
+
+      <section class="editor-layout">
+        <article class="editor-panel">
+          <div class="editor-toolbar">
+            <div>
+              <span class="eyebrow">Chapter Editor</span>
+              <h2 id="chapterTitle">第 12 章 · 钟楼下的背叛</h2>
+            </div>
+            <div class="toolbar-actions">
+              <button type="button" data-action="outline">章节构思</button>
+              <button type="button" data-action="polish">拟人化润色</button>
+              <button type="button" data-action="screenplay">分镜剧本</button>
+            </div>
+          </div>
+          <textarea id="chapterEditor" spellcheck="false" aria-label="章节正文编辑器"></textarea>
+          <div class="editor-footer">
+            <span>自动保存：刚刚</span>
+            <span>上下文窗口：前 2 章 + 后续大纲 + 相关知识片段</span>
+          </div>
+        </article>
+
+        <aside class="assistant-panel" aria-label="AI 同步辅助提示">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Live AI Assist</span>
+              <h2>同步辅助提示</h2>
+            </div>
+            <span class="status-dot">在线</span>
+          </div>
+          <div class="assist-tabs" role="tablist" aria-label="AI 助手分类">
+            <button class="active" type="button" data-tab="ideas">构思</button>
+            <button type="button" data-tab="checks">校验</button>
+            <button type="button" data-tab="risks">版权</button>
+          </div>
+          <div class="assist-feed" id="assistFeed"></div>
+        </aside>
+      </section>
+
+      <section class="feature-grid" aria-label="小说辅助功能">
+        <article class="feature-card">
+          <div class="icon">🧠</div>
+          <h3>小说框架提炼</h3>
+          <p>从已有章节提取三幕结构、主线任务、反派压力与爽点节奏。</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon">🧩</div>
+          <h3>情节冲突校验</h3>
+          <p>检查角色动机、时间线、道具出现、伏笔回收与设定矛盾。</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon">👥</div>
+          <h3>人物关系设计</h3>
+          <p>维护角色立场、关系强度、秘密信息和成长线，辅助生成关系网。</p>
+        </article>
+        <article class="feature-card">
+          <div class="icon">🔎</div>
+          <h3>网络文献搜索</h3>
+          <p>聚合网络资料、项目知识库和历史文档，为创作提供可追溯素材。</p>
+        </article>
+      </section>
+
+      <section class="graph-layout" aria-label="思维图与节点图">
+        <article class="panel graph-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Karpathy-style Knowledge Map</span>
+              <h2>知识库节点图</h2>
+            </div>
+            <button class="ghost-btn" type="button" data-action="refresh-graph">刷新图谱</button>
+          </div>
+          <div class="node-map" id="nodeMap"></div>
+        </article>
+        <article class="panel relation-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Character Graph</span>
+              <h2>人物关系 AI 设计</h2>
+            </div>
+          </div>
+          <div class="relation-list" id="relationList"></div>
+        </article>
+      </section>
+    </main>
+
+    <section class="drawer" id="knowledgeDrawer" aria-label="知识库面板" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <span class="eyebrow">Knowledge Base</span>
+          <h2>写作知识库 / 单项目知识库</h2>
+        </div>
+        <button class="ghost-btn" type="button" data-close-panel>关闭</button>
+      </div>
+      <div class="search-box">
+        <input id="knowledgeSearch" type="search" placeholder="搜索历史文档、项目设定、网络文献..." />
+        <button class="primary-btn" type="button" data-action="search-knowledge">搜索</button>
+      </div>
+      <div class="knowledge-columns">
+        <div>
+          <h3>写作知识库</h3>
+          <div id="globalKnowledge"></div>
+        </div>
+        <div>
+          <h3>项目知识库</h3>
+          <div id="projectKnowledge"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="drawer" id="publishDrawer" aria-label="发布计划面板" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <span class="eyebrow">Publish Center</span>
+          <h2>平台推送与定时章节</h2>
+        </div>
+        <button class="ghost-btn" type="button" data-close-panel>关闭</button>
+      </div>
+      <div class="publish-board" id="publishBoard"></div>
+    </section>
+  </div>
+</body>
+</html>
