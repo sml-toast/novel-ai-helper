@@ -73,6 +73,8 @@
         <div class="topbar-actions">
           <button class="secondary-btn" type="button" data-open-panel="knowledge">知识库</button>
           <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
+          <button class="secondary-btn" type="button" data-action="load-history">AI历史</button>
+          <button class="secondary-btn" type="button" data-action="load-audit">审计日志</button>
           <button class="primary-btn" type="button" data-action="run-sync-ai">同步辅助</button>
         </div>
       </header>
@@ -102,10 +104,30 @@
               <span class="eyebrow">Chapter Editor</span>
               <h2 id="chapterTitle">第 12 章 · 钟楼下的背叛</h2>
             </div>
-            <div class="toolbar-actions">
+          <div class="toolbar-actions">
+              <button type="button" data-action="framework">框架提炼</button>
+              <button type="button" data-action="plot-extract">情节提炼</button>
               <button type="button" data-action="outline">章节构思</button>
               <button type="button" data-action="polish">拟人化润色</button>
               <button type="button" data-action="screenplay">分镜剧本</button>
+              <button type="button" data-action="continue-writing">续写建议</button>
+              <button type="button" data-action="hook-boost">爆点强化</button>
+              <button type="button" data-action="foreshadow">伏笔回收</button>
+              <button type="button" data-action="platform-rewrite">平台改写</button>
+              <button type="button" data-action="title-ai">标题生成</button>
+              <button type="button" data-action="synopsis-ai">简介生成</button>
+              <button type="button" data-action="tags-ai">标签生成</button>
+              <button type="button" data-action="dialogue-check">对白检查</button>
+              <button type="button" data-action="annotation-ai">批注建议</button>
+              <button type="button" data-action="summary-ai">章节摘要</button>
+              <button type="button" data-action="term-extract">设定抽取</button>
+              <button type="button" data-action="sensitive-rewrite">敏感改写</button>
+              <button type="button" data-action="character-bio">角色小传</button>
+              <button type="button" data-action="timeline-ai">时间线整理</button>
+              <button type="button" data-action="scene-ai">场景描写</button>
+              <button type="button" data-action="world-ai">世界观扩展</button>
+              <button type="button" data-action="conflict-check">冲突校验</button>
+              <button type="button" data-action="copyright-check">版权警示</button>
             </div>
           </div>
           <textarea id="chapterEditor" spellcheck="false" aria-label="章节正文编辑器"></textarea>
@@ -121,7 +143,7 @@
               <span class="eyebrow">Live AI Assist</span>
               <h2>同步辅助提示</h2>
             </div>
-            <span class="status-dot">在线</span>
+            <span class="status-dot" id="apiStatus">连接中</span>
           </div>
           <div class="assist-tabs" role="tablist" aria-label="AI 助手分类">
             <button class="active" type="button" data-tab="ideas">构思</button>
@@ -164,7 +186,16 @@
             </div>
             <button class="ghost-btn" type="button" data-action="refresh-graph">刷新图谱</button>
           </div>
+          <div class="graph-tabs" role="tablist" aria-label="图谱类型">
+            <button class="active" type="button" data-graph-type="all">综合图</button>
+            <button type="button" data-graph-type="knowledge">知识图</button>
+            <button type="button" data-graph-type="character">人物图</button>
+            <button type="button" data-graph-type="timeline">时间线</button>
+            <button type="button" data-graph-type="world">世界观</button>
+          </div>
+          <div class="graph-stats" id="graphStats"></div>
           <div class="node-map" id="nodeMap"></div>
+          <div class="graph-detail" id="graphDetail">点击节点查看详情</div>
         </article>
         <article class="panel relation-panel">
           <div class="panel-head large">
@@ -174,6 +205,197 @@
             </div>
           </div>
           <div class="relation-list" id="relationList"></div>
+        </article>
+      </section>
+
+      <section class="ops-layout" aria-label="项目管理与版本控制">
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Project Wizard</span>
+              <h2>项目创建与知识导入</h2>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="projectTitleInput" type="text" placeholder="新项目名称" value="星海旧约" />
+            <input id="projectGenreInput" type="text" placeholder="题材" value="科幻悬疑" />
+            <input id="chapterTitleInput" type="text" placeholder="新章节标题" value="第 13 章 · 地下海风" />
+            <input id="platformNameInput" type="text" placeholder="平台名称" value="模拟平台 A" />
+            <input id="knowledgeTitleInput" type="text" placeholder="知识标题" value="平台节奏规则" />
+            <input id="knowledgeBodyInput" type="text" placeholder="知识内容" value="每章结尾保留一个动作钩子，避免连续解释设定。" />
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" data-action="create-project">创建项目</button>
+            <button type="button" data-action="create-chapter">新建章节</button>
+            <button type="button" data-action="import-knowledge">导入项目知识</button>
+            <button type="button" data-action="relationship-ai">关系设计</button>
+            <button type="button" data-action="mindmap">生成思维图</button>
+            <button type="button" data-action="save-platform">保存平台配置</button>
+            <button type="button" data-action="schedule-publish">创建定时发布</button>
+            <button type="button" data-action="archive-chapter">归档当前章节</button>
+          </div>
+        </article>
+
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Version History</span>
+              <h2>章节版本与回滚</h2>
+            </div>
+            <button class="ghost-btn" type="button" data-action="load-versions">查看版本</button>
+          </div>
+          <div class="version-list" id="versionList"></div>
+        </article>
+      </section>
+
+      <section class="ops-layout" aria-label="统计、AI历史与审计日志">
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Dashboard</span>
+              <h2>写作运营统计</h2>
+            </div>
+            <button class="ghost-btn" type="button" data-action="refresh-dashboard">刷新统计</button>
+          </div>
+          <div class="stats-grid" id="dashboardStats"></div>
+          <div class="goal-box">
+            <input id="dailyGoalInput" type="number" value="3000" min="0" placeholder="每日目标字数" />
+            <input id="progressWordsInput" type="number" value="1200" min="0" placeholder="今日新增字数" />
+            <button type="button" data-action="save-goal">保存目标</button>
+            <button type="button" data-action="add-progress">记录进度</button>
+          </div>
+          <div class="progress-list" id="progressList"></div>
+        </article>
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Trace</span>
+              <h2>AI 历史 / 审计日志</h2>
+            </div>
+          </div>
+          <div class="log-list" id="activityLog"></div>
+        </article>
+      </section>
+
+      <section class="ops-layout" aria-label="AI配置、Prompt模板与导出">
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">AI Settings</span>
+              <h2>AI 配置与 Prompt 模板</h2>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="aiBaseUrlInput" type="text" placeholder="OpenAI-compatible baseURL（可留空使用 mock）" />
+            <input id="aiModelInput" type="text" placeholder="模型名称" value="mock-novel-copilot" />
+            <input id="promptTaskInput" type="text" placeholder="任务类型，如 polish" value="polish" />
+            <input id="promptTitleInput" type="text" placeholder="模板标题" value="拟人化润色模板" />
+          </div>
+          <textarea class="config-textarea" id="promptTemplateInput">保持作者原意，把静态描写改为具有动作意志的拟人化表达，避免过度华丽。</textarea>
+          <div class="toolbar-actions">
+            <button type="button" data-action="save-ai-settings">保存 AI 配置</button>
+            <button type="button" data-action="save-prompt">保存 Prompt</button>
+            <button type="button" data-action="load-prompts">查看模板</button>
+          </div>
+        </article>
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Export & Bulk Import</span>
+              <h2>项目导出与批量知识导入</h2>
+            </div>
+          </div>
+          <textarea class="config-textarea" id="bulkKnowledgeInput">黑潮节奏：黑潮相关信息每三章推进一次。\n移动端句式：长句拆短，章末保留互动问题。</textarea>
+          <div class="toolbar-actions">
+            <button type="button" data-action="bulk-knowledge">批量导入知识</button>
+            <button type="button" data-action="export-project">导出项目 JSON</button>
+            <button type="button" data-action="export-chapter">导出当前章节 TXT</button>
+          </div>
+          <div class="log-list" id="configLog"></div>
+        </article>
+      </section>
+
+      <section class="ops-layout" aria-label="章节批注、创作待办、术语表和敏感词检查">
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Editorial Ops</span>
+              <h2>章节批注与创作待办</h2>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="annotationQuoteInput" type="text" placeholder="批注原文" value="黑潮不是灾难，是归乡" />
+            <input id="annotationNoteInput" type="text" placeholder="批注说明" value="核心主题句，注意后续回收" />
+            <input id="todoTitleInput" type="text" placeholder="创作待办" value="检查罗文背叛动机是否足够清晰" />
+            <input id="glossaryTermInput" type="text" placeholder="术语词条" value="归航者" />
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" data-action="add-annotation">新增批注</button>
+            <button type="button" data-action="load-annotations">查看批注</button>
+            <button type="button" data-action="add-todo">新增待办</button>
+            <button type="button" data-action="load-todos">查看待办</button>
+          </div>
+          <div class="log-list" id="editorialLog"></div>
+        </article>
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Glossary & Risk</span>
+              <h2>术语表与敏感词检查</h2>
+            </div>
+          </div>
+          <textarea class="config-textarea" id="sensitiveTextInput">这是一段包含血腥风险词的测试文本，用于平台安全检查。</textarea>
+          <div class="toolbar-actions">
+            <button type="button" data-action="add-glossary">新增术语</button>
+            <button type="button" data-action="load-glossary">查看术语表</button>
+            <button type="button" data-action="sensitive-check">敏感词检查</button>
+          </div>
+          <div class="log-list" id="riskLog"></div>
+        </article>
+      </section>
+
+      <section class="ops-layout" aria-label="角色档案、时间线、场景库和世界观设定">
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Story Bible</span>
+              <h2>角色档案与时间线</h2>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="characterNameInput" type="text" placeholder="角色名" value="沈砚" />
+            <input id="characterRoleInput" type="text" placeholder="角色定位" value="黑潮研究员" />
+            <input id="timelineTitleInput" type="text" placeholder="时间线事件" value="黑潮第一次回流" />
+            <input id="timelineTimeInput" type="text" placeholder="事件时间" value="十年前" />
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" data-action="add-character">新增角色</button>
+            <button type="button" data-action="load-characters">查看角色</button>
+            <button type="button" data-action="add-timeline">新增时间线</button>
+            <button type="button" data-action="load-timeline">查看时间线</button>
+          </div>
+          <div class="log-list" id="storyBibleLog"></div>
+        </article>
+        <article class="panel ops-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">World Builder</span>
+              <h2>场景库与世界观设定</h2>
+            </div>
+          </div>
+          <div class="form-grid">
+            <input id="sceneNameInput" type="text" placeholder="场景名" value="地下潮汐站" />
+            <input id="sceneMoodInput" type="text" placeholder="场景氛围" value="潮湿、幽暗、机械轰鸣" />
+            <input id="worldTitleInput" type="text" placeholder="设定标题" value="归航者规则" />
+            <input id="worldCategoryInput" type="text" placeholder="设定分类" value="身份规则" />
+          </div>
+          <div class="toolbar-actions">
+            <button type="button" data-action="add-scene">新增场景</button>
+            <button type="button" data-action="load-scenes">查看场景</button>
+            <button type="button" data-action="add-world">新增设定</button>
+            <button type="button" data-action="load-world">查看设定</button>
+          </div>
+          <div class="log-list" id="worldBuilderLog"></div>
         </article>
       </section>
     </main>
