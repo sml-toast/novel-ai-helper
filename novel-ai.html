@@ -75,6 +75,7 @@
           <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
           <button class="secondary-btn" type="button" data-action="load-history">AI历史</button>
           <button class="secondary-btn" type="button" data-action="load-audit">审计日志</button>
+          <button class="secondary-btn" type="button" data-action="open-log">系统日志</button>
           <button class="primary-btn" type="button" data-action="run-sync-ai">同步辅助</button>
         </div>
       </header>
@@ -435,5 +436,34 @@
       <div class="publish-board" id="publishBoard"></div>
     </section>
   </div>
+
+    <section class="drawer" id="logDrawer" aria-label="系统日志面板" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <span class="eyebrow">System Log</span>
+          <h2>操作日志</h2>
+        </div>
+        <button class="ghost-btn" type="button" data-close-panel>关闭</button>
+      </div>
+      <div class="log-controls" style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
+          级别筛选:
+          <select id="logLevelFilter" onchange="renderLogPanel()">
+            <option value="DEBUG">全部 (DEBUG)</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+        </label>
+        <button class="admin-btn admin-btn-sm" type="button" onclick="compressLogs()">压缩日志</button>
+        <button class="admin-btn admin-btn-sm" type="button" onclick="clearLogs()" style="background: #dc3545; color: white;">清除日志</button>
+        <button class="admin-btn admin-btn-sm" type="button" onclick="renderLogPanel()">刷新</button>
+      </div>
+      <div class="log-stats" style="margin-bottom: 8px; font-size: 12px; color: var(--text-secondary);">
+        当前显示: <span id="logCount">0</span> 条
+      </div>
+      <div id="logList" style="max-height: 500px; overflow-y: auto;"></div>
+    </section>
+
 </body>
 </html>

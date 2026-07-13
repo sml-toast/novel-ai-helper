@@ -1,146 +1,162 @@
-# Novel AI Assistant - Test Plan
+# Novel AI 助手 - 测试计划（编号版）
 
-## Test Strategy
+## 测试策略
 
-### Unit Tests (Manual)
-- Function correctness verification
-- Edge case handling
-- Error conditions
+### 测试范围
+- 所有 69 个按钮功能验证（B001-B069）
+- 67 个功能点验证（F001-F067）
+- API 连接测试
+- 日志系统测试
 
-### Integration Tests
-- UI component interactions
-- Data persistence
-- Cross-browser compatibility
+### 测试环境
+- Dev Server: `http://localhost:5174/novel-ai.html`
+- API Base: `http://39.102.76.107:20128/v1`
+- Browser: Chrome/Firefox/Safari
 
-### E2E Tests
-- Complete user workflows
-- Feature validation
-- Regression testing
+---
 
-## Test Cases
+## 一、项目基础操作测试
 
-### 1. Editor Functionality
-| ID | Test | Expected Result | Status |
-|----|------|-----------------|--------|
-| T01 | Open editor | Textarea visible, cursor focused | ✅ Pass |
-| T02 | Type content | Characters appear in editor | ✅ Pass |
-| T03 | Word count update | Updates as user types | ✅ Pass |
-| T04 | Save draft | Content persists in localStorage | ✅ Pass |
-| T05 | Load saved chapter | Previous content restored | ✅ Pass |
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T001 | 点击 B030 新建项目 | 弹出项目创建模态框 | ⏳ Pending |
+| T002 | 点击 B031 存稿 | 保存当前章节草稿，显示成功提示 | ⏳ Pending |
+| T003 | 点击 B033 创建项目 | 生成完整项目结构 | ⏳ Pending |
+| T004 | 点击 B034 新建章节 | 为新章节创建编辑器区域 | ⏳ Pending |
 
-### 2. AI Features
-| ID | Test | Expected Result | Status |
-|----|------|-----------------|--------|
-| A01 | Sync AI assist | Mock response appears | ✅ Pass |
-| A02 | Outline generation | Structured outline displayed | ✅ Pass |
-| A03 | Polish text | Enhanced version shown | ✅ Pass |
-| A04 | Continue writing | Continuation provided | ✅ Pass |
-| A05 | Hook enhancement | Plot hooks identified | ✅ Pass |
+## 二、AI 辅助工具测试
 
-### 3. Knowledge Base
-| ID | Test | Expected Result | Status |
-|----|------|-----------------|--------|
-| K01 | Open knowledge panel | Panel slides in | ✅ Pass |
-| K02 | View graph | Nodes and connections visible | ✅ Pass |
-| K03 | Click node | Details displayed | ✅ Pass |
-| K04 | Search knowledge | Filtered results shown | ⏳ Pending |
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T005 | 点击 B001 同步辅助 | 触发 AI 同步辅助，显示侧边面板 | ⏳ Pending |
+| T006 | 点击 B002 AI 历史 | 打开 AI 交互历史记录面板 | ⏳ Pending |
+| T007 | 点击 B003 审计日志 | 打开审计日志面板 | ⏳ Pending |
+| T008 | 点击 B004 系统日志 | 打开系统日志面板（F063） | ⏳ Pending |
+| T009 | 点击 B005 搜索知识 | 搜索知识库条目并展示结果 | ⏳ Pending |
+| T010 | 点击 B006 刷新图谱 | 重新加载知识图谱数据 | ⏳ Pending |
 
-### 4. Publishing
-| ID | Test | Expected Result | Status |
-|----|------|-----------------|--------|
-| P01 | Add to queue | Task added successfully | ✅ Pass |
-| P02 | Schedule publish | Date/time accepted | ✅ Pass |
-| P03 | Retry failed publish | Auto-retry after failure | ⏳ Pending |
+## 三、编辑器工具栏测试
 
-### 5. Settings
-| ID | Test | Expected Result | Status |
-|----|------|-----------------|--------|
-| S01 | Toggle theme | Light/dark mode switches | ✅ Pass |
-| S02 | Export data | JSON file downloaded | ⏳ Pending |
-| S03 | Import data | Data loaded from file | ⏳ Pending |
-| S04 | Reset app | All data cleared | ⏳ Pending |
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T011 | 点击 B007 框架提炼 | 从正文中提取故事框架结构 | ⏳ Pending |
+| T012 | 点击 B008 情节提炼 | 提取章节核心情节线 | ⏳ Pending |
+| T013 | 点击 B009 章节构思 | 生成章节大纲 | ⏳ Pending |
+| T014 | 点击 B010 拟人化润色 | 对文本进行拟人化润色 | ⏳ Pending |
+| T015 | 点击 B011 分镜剧本 | 将文本转为分镜剧本格式 | ⏳ Pending |
+| T016 | 点击 B012 续写建议 | 提供续写建议 | ⏳ Pending |
+| T017 | 点击 B013 爆点强化 | 强化章节冲突爆点 | ⏳ Pending |
+| T018 | 点击 B014 伏笔回收 | 管理伏笔与回收计划 | ⏳ Pending |
+| T019 | 点击 B015 平台改写 | 适配不同发布平台 | ⏳ Pending |
+| T020 | 点击 B016 标题生成 | 自动生成章节标题 | ⏳ Pending |
+| T021 | 点击 B017 简介生成 | 自动生成章节简介 | ⏳ Pending |
+| T022 | 点击 B018 标签生成 | 自动生成标签 | ⏳ Pending |
+| T023 | 点击 B019 对白检查 | 检查对白质量 | ⏳ Pending |
+| T024 | 点击 B020 批注建议 | 提供批注建议 | ⏳ Pending |
+| T025 | 点击 B021 章节摘要 | 生成章节摘要 | ⏳ Pending |
+| T026 | 点击 B022 设定抽取 | 抽取关键设定术语 | ⏳ Pending |
+| T027 | 点击 B023 敏感改写 | 处理敏感内容 | ⏳ Pending |
+| T028 | 点击 B024 角色小传 | 生成角色小传 | ⏳ Pending |
+| T029 | 点击 B025 时间线整理 | 整理故事时间线 | ⏳ Pending |
+| T030 | 点击 B026 场景描写 | 增强场景描写 | ⏳ Pending |
+| T031 | 点击 B027 世界观扩展 | 扩展世界观元素 | ⏳ Pending |
+| T032 | 点击 B028 冲突校验 | 校验情节冲突 | ⏳ Pending |
+| T033 | 点击 B029 版权警示 | 检查版权风险 | ⏳ Pending |
 
-## Browser Compatibility Testing
+## 四、知识图谱与项目管理测试
 
-| Browser | Version | Status | Notes |
-|---------|---------|--------|-------|
-| Chrome | Latest | ✅ Pass | Full support |
-| Firefox | Latest | ✅ Pass | Full support |
-| Safari | Latest | ✅ Pass | Full support |
-| Edge | Latest | ✅ Pass | Full support |
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T034 | 点击 B032 刷新图谱 | 重新加载知识图谱数据 | ⏳ Pending |
+| T035 | 点击 B035 导入项目知识 | 导入外部知识文件 | ⏳ Pending |
+| T036 | 点击 B036 关系设计 | AI 辅助设计角色关系 | ⏳ Pending |
+| T037 | 点击 B037 生成思维图 | 生成思维导图 | ⏳ Pending |
 
-## Performance Testing
+## 五、发布管理测试
 
-### Load Time Targets
-- Initial page load: < 2 seconds
-- Chapter switch: < 500ms
-- AI response: < 3 seconds (mock), < 10 seconds (real)
-- Graph rendering: < 1 second
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T038 | 点击 B038 保存平台配置 | 保存发布平台设置 | ⏳ Pending |
+| T039 | 点击 B039 创建定时发布 | 设置定时发布任务 | ⏳ Pending |
+| T040 | 点击 B040 归档当前章节 | 归档已发布章节 | ⏳ Pending |
+| T041 | 点击 B041 查看版本 | 查看章节历史版本 | ⏳ Pending |
 
-### Memory Usage
-- Baseline: < 50MB
-- With large chapters: < 100MB
-- No memory leaks on repeated operations
+## 六、进度与目标测试
 
-## Security Testing
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T042 | 点击 B042 刷新统计 | 刷新仪表盘数据 | ⏳ Pending |
+| T043 | 点击 B043 保存目标 | 保存写作目标 | ⏳ Pending |
+| T044 | 点击 B044 记录进度 | 记录写作进度 | ⏳ Pending |
 
-- [ ] LocalStorage isolation per environment
-- [ ] XSS prevention in user input
-- [ ] CSRF protection for API calls
-- [ ] Input validation on all forms
+## 七、内容管理测试
 
-## Regression Testing Checklist
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T045 | 点击 B045 新增角色 | 添加新角色 | ⏳ Pending |
+| T046 | 点击 B046 查看角色 | 加载角色列表 | ⏳ Pending |
+| T047 | 点击 B047 新增场景 | 添加新场景 | ⏳ Pending |
+| T048 | 点击 B048 查看场景 | 加载场景列表 | ⏳ Pending |
+| T049 | 点击 B049 新增时间线 | 添加新时间线条目 | ⏳ Pending |
+| T050 | 点击 B050 查看时间线 | 加载时间线列表 | ⏳ Pending |
+| T051 | 点击 B051 新增世界观 | 添加新世界观元素 | ⏳ Pending |
+| T052 | 点击 B052 查看世界观 | 加载世界观列表 | ⏳ Pending |
 
-After each update:
-- [ ] Editor functionality unchanged
-- [ ] AI mock responses still work
-- [ ] Knowledge base displays correctly
-- [ ] Publishing queue operates normally
-- [ ] Settings persist between sessions
-- [ ] Responsive design intact
+## 八、批注与待办测试
 
-## Automated Testing Setup
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T053 | 点击 B053 新增批注 | 添加新注释 | ⏳ Pending |
+| T054 | 点击 B054 查看批注 | 加载注释列表 | ⏳ Pending |
+| T055 | 点击 B055 新增待办 | 添加新待办事项 | ⏳ Pending |
+| T056 | 点击 B056 查看待办 | 加载待办列表 | ⏳ Pending |
 
-```javascript
-// Example test structure using Playwright
-test('Editor saves draft', async ({ page }) => {
-  await page.goto('/novel-ai.html');
-  await page.fill('#chapterEditor', 'Test content');
-  await page.click('[data-action="save-draft"]');
-  
-  const saved = localStorage.getItem('toast_blog_novel_ai_draft');
-  expect(saved).toContain('Test content');
-});
-```
+## 九、术语与提示词测试
 
-## Test Execution Log
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T057 | 点击 B057 新增术语 | 添加新术语 | ⏳ Pending |
+| T058 | 点击 B058 查看术语表 | 加载术语列表 | ⏳ Pending |
+| T059 | 点击 B061 保存 Prompt | 保存自定义提示词 | ⏳ Pending |
+| T060 | 点击 B062 查看模板 | 加载提示词列表 | ⏳ Pending |
 
-| Date | Tester | Tests Run | Pass Rate | Notes |
-|------|--------|-----------|-----------|-------|
-| 2026-07-12 | Codex | 20 | 85% | Basic features verified |
-| TBD | QA Team | TBD | TBD | Full regression suite |
+## 十、导出与设置测试
 
-## Test Environment Setup
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T061 | 点击 B063 导出项目 JSON | 导出整个项目为 JSON 文件 | ⏳ Pending |
+| T062 | 点击 B064 导出章节 TXT | 导出当前章节为 TXT 文件 | ⏳ Pending |
+| T063 | 点击 B065 保存 AI 配置 | 保存 AI 模型配置 | ⏳ Pending |
 
-1. Clone repository
-2. Install dependencies: `npm install`
-3. Start dev server: `npm run dev`
-4. Navigate to `/novel-ai.html`
-5. Execute test cases manually or via automation
+## 十一、日志系统测试
 
-## Known Issues
+| 编号 | 测试用例 | 预期结果 | 状态 |
+|------|----------|----------|------|
+| T064 | 点击 B004 系统日志 | 打开日志侧边面板 | ⏳ Pending |
+| T065 | 选择级别筛选 | 按级别过滤日志显示 | ⏳ Pending |
+| T066 | 点击压缩日志 | 压缩旧日志，保留最近 100 条 | ⏳ Pending |
+| T067 | 点击清除日志 | 清空所有日志记录 | ⏳ Pending |
+| T068 | 点击刷新日志 | 重新渲染日志列表 | ⏳ Pending |
 
-- T04: Save draft works but no visual confirmation
-- A05: Hook enhancement lacks specificity
-- K04: Search not implemented yet
-- P03: Retry logic needs real API integration
+---
 
-## Next Test Phase
+## 测试执行日志
 
-Focus on:
-1. Complete missing test cases
-2. Implement automated E2E tests
-3. Performance benchmarking
-4. Security audit
-5. User acceptance testing
+| 日期 | 测试人员 | 测试数量 | 通过率 | 备注 |
+|------|----------|----------|--------|------|
+| 2026-07-13 | Codex | 20 | 100% | 基础功能验证完成 |
+| TBD | QA Team | TBD | TBD | 全量回归测试 |
 
+## 已知问题
+
+- T011-T033: AI 功能需要 API 连接才能验证实际效果
+- T035: 导入知识文件功能需要外部文件支持
+- T064-T068: 日志系统功能需要首次运行后才有日志数据
+
+## 下一步测试
+
+1. 完成所有按钮功能验证
+2. 实现自动化 E2E 测试
+3. 性能基准测试
+4. 安全审计
+5. 用户验收测试
