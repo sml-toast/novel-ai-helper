@@ -1,4 +1,4 @@
-const apiBase = `${location.protocol}//${location.hostname}:8787/api/novel`;
+const apiBase = `${location.protocol}//${location.hostname}:${window.NOVEL_API_PORT || 8787}/api/novel`;
 
 // ── Logging System ──
 const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
@@ -7,6 +7,10 @@ let logEntries = [];
 const MAX_LOG_ENTRIES = 500;
 
 function log(level, category, message) {
+  // Enforce size limit to prevent localStorage quota exceeded errors
+  const serialized = JSON.stringify(logEntries);
+  if (serialized.length > 4 * 1024 * 1024) compressLogs();
+
   const entry = {
     id: Date.now(),
     timestamp: new Date().toISOString(),
@@ -19,7 +23,7 @@ function log(level, category, message) {
   if (logEntries.length > MAX_LOG_ENTRIES) {
     logEntries = logEntries.slice(-MAX_LOG_ENTRIES);
   }
-  localStorage.setItem('novel_logs', JSON.stringify(logEntries));
+  try { localStorage.setItem('novel_logs', JSON.stringify(logEntries)); } catch {}
   console.log(`[${level}] [${category}] ${message}`);
 }
 

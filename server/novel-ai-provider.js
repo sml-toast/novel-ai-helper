@@ -29,20 +29,20 @@ const taskTemplates = {
     ['结构建议', '主线采用三幕式：雾港异象、学院追捕、黑潮归乡；每幕末尾回收一个道具伏笔。']
   ],
   'plot-extract': [
-    ['小说情节提炼', '本章核心情节是“背叛揭露 + 船票证据 + 失踪名单钩子”，建议作为后续摘要缓存。'],
+    ['小说情节提炼', '本章核心情节是”背叛揭露 + 船票证据 + 失踪名单钩子”，建议作为后续摘要缓存。'],
     ['情节节奏', '信息密度偏高，适合以一个动作细节承接下一章，而非继续追加解释。']
   ],
   mindmap: [
     ['小说思维图', '中心节点：黑潮真相；一级节点：调查局、秘仪学院、失踪名单、星火徽章、旧船票。'],
-    ['节点图建议', '把“银色粉尘”连接到“秘仪追踪术”，把“旧船票”连接到“失忆名单”。']
+    ['节点图建议', '把”银色粉尘”连接到”秘仪追踪术”，把”旧船票”连接到”失忆名单”。']
   ],
   relationship: [
-    ['人物关系 AI 设计', '建议新增“罗文 ↔ 学院导师：被迫交易”，解释他为何必须背叛林祈。'],
+    ['人物关系 AI 设计', '建议新增”罗文 ↔ 学院导师：被迫交易”，解释他为何必须背叛林祈。'],
     ['关系强度', '林祈与伊莱娜信任值可从 55 提升到 72，但保留关键秘密形成后续张力。']
   ],
-  conflict: [
-    ['情节校验冲突', '船票暗示林祈七年前登船，与第 8 章“从未去过码头”冲突；可解释为失忆前经历。'],
-    ['设定一致性', '黑潮既是灾难又是归乡，建议明确“灾难”是学院叙事，“归乡”是真实含义。']
+  'conflict-v2': [
+    ['情节校验冲突', '船票暗示林祈七年前登船，与第 8 章”从未去过码头”冲突；可解释为失忆前经历。'],
+    ['设定一致性', '黑潮既是灾难又是归乡，建议明确”灾难”是学院叙事，”归乡”是真实含义。']
   ],
   continue: [
     ['续写建议', '下一段可让林祈不立刻质问伊莱娜，而是先注意船票上的盐渍与钟楼地下海风呼应。'],
@@ -130,29 +130,40 @@ async function callOpenAICompatible({ project, taskType, prompt }) {
   const model = process.env.NOVEL_AI_MODEL || project.ai_model;
   if (!baseUrl || !apiKey || model === 'mock-novel-copilot') return null;
 
-  const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: '你是专业小说创作辅助系统，输出 JSON 数组，每项包含 title/body/tone。' },
-        { role: 'user', content: prompt }
-      ],
-      temperature: 0.7
-    })
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
-  if (!response.ok) throw new Error(`AI provider failed: ${response.status}`);
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || '';
   try {
-    return { provider: 'openai-compatible', items: JSON.parse(content) };
-  } catch {
-    return { provider: 'openai-compatible', items: [{ title: 'AI 返回结果', body: content, tone: '' }] };
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: '你是专业小说创作辅助系统，输出 JSON 数组，每项包含 title/body/tone。' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) throw new Error(`AI provider failed: ${response.status}`);
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    try {
+      return { provider: 'openai-compatible', items: JSON.parse(content) };
+    } catch {
+      return { provider: 'openai-compatible', items: [{ title: 'AI 返回结果', body: content, tone: '' }] };
+    }
+  } catch (error) {
+    clearTimeout(timeout);
+    throw error;
   }
 }
 

@@ -29,6 +29,10 @@ function now() {
   return new Date().toISOString();
 }
 
+function safeJsonParse(str) {
+  try { return JSON.parse(str); } catch { return str; }
+}
+
 function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -544,12 +548,12 @@ function listAiTasks(projectId, limit = 20) {
     `SELECT id, chapter_id, task_type, output, provider, created_at
      FROM ai_tasks WHERE project_id = ? ORDER BY id DESC LIMIT ?`,
     [projectId, limit]
-  ).map(row => ({ ...row, output: JSON.parse(row.output) }));
+  ).map(row => ({ ...row, output: safeJsonParse(row.output) }));
 }
 
 function listAuditLogs(limit = 30) {
   return all('SELECT id, action, payload, created_at FROM audit_logs ORDER BY id DESC LIMIT ?', [limit])
-    .map(row => ({ ...row, payload: JSON.parse(row.payload) }));
+    .map(row => ({ ...row, payload: safeJsonParse(row.payload) }));
 }
 
 function upsertPlatformConfig({ projectId, platform, accountName, rules }) {
@@ -761,14 +765,18 @@ function buildGraph(projectId, graphType = 'all') {
     ...worldSettings.map(row => ({ source: 'project', target: `world-${row.title}`, label: row.category, group: 'world' }))
   ];
   entries.forEach(entry => nodes.push({ id: `kb-${entry.title}`, label: entry.title, type: entry.scope, group: 'knowledge', detail: entry.body }));
+  // Characters first so their full detail (role/motivation/arc) survives dedup over relation-only entries
   characters.forEach(row => nodes.push({ id: `char-${row.name}`, label: row.name, type: 'character', group: 'character', detail: `${row.role}｜${row.motivation}｜${row.arc}` }));
-  relationRows.forEach(row => {
-    nodes.push({ id: `char-${row.source_name}`, label: row.source_name, type: 'character', group: 'character', detail: row.relation_type });
-    nodes.push({ id: `char-${row.target_name}`, label: row.target_name, type: 'character', group: 'character', detail: row.relation_type });
-  });
   timeline.forEach(row => nodes.push({ id: `time-${row.title}`, label: row.title, type: 'timeline', group: 'timeline', detail: `${row.event_time}｜${row.description}` }));
   scenes.forEach(row => nodes.push({ id: `scene-${row.name}`, label: row.name, type: 'scene', group: 'scene', detail: `${row.mood}｜${row.description}` }));
   worldSettings.forEach(row => nodes.push({ id: `world-${row.title}`, label: row.title, type: 'world', group: 'world', detail: `${row.category}｜${row.content}` }));
+  // Relations last — they may add characters not in the characters table, but won't overwrite character details
+  relationRows.forEach(row => {
+    const sourceId = `char-${row.source_name}`;
+    const targetId = `char-${row.target_name}`;
+    if (!nodes.some(n => n.id === sourceId)) nodes.push({ id: sourceId, label: row.source_name, type: 'character', group: 'character', detail: row.relation_type });
+    if (!nodes.some(n => n.id === targetId)) nodes.push({ id: targetId, label: row.target_name, type: 'character', group: 'character', detail: row.relation_type });
+  });
   const uniqueNodes = Array.from(new Map(nodes.map(node => [node.id, node])).values());
   const filteredNodes = graphType === 'all' ? uniqueNodes : uniqueNodes.filter(node => node.group === graphType || node.type === 'core');
   const ids = new Set(filteredNodes.map(node => node.id));
