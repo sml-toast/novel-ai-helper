@@ -448,16 +448,16 @@
       <div class="log-controls" style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
         <label style="display: flex; align-items: center; gap: 4px; font-size: 13px;">
           级别筛选:
-          <select id="logLevelFilter" onchange="renderLogPanel()">
+          <select id="logLevelFilter" data-action="filter-log">
             <option value="DEBUG">全部 (DEBUG)</option>
             <option value="INFO">INFO</option>
             <option value="WARN">WARN</option>
             <option value="ERROR">ERROR</option>
           </select>
         </label>
-        <button class="admin-btn admin-btn-sm" type="button" onclick="compressLogs()">压缩日志</button>
-        <button class="admin-btn admin-btn-sm" type="button" onclick="clearLogs()" style="background: #dc3545; color: white;">清除日志</button>
-        <button class="admin-btn admin-btn-sm" type="button" onclick="renderLogPanel()">刷新</button>
+        <button class="admin-btn admin-btn-sm" type="button" data-action="compress-logs">压缩日志</button>
+        <button class="admin-btn admin-btn-sm" type="button" data-action="clear-logs" style="background: #dc3545; color: white;">清除日志</button>
+        <button class="admin-btn admin-btn-sm" type="button" data-action="refresh-logs">刷新</button>
       </div>
       <div class="log-stats" style="margin-bottom: 8px; font-size: 12px; color: var(--text-secondary);">
         当前显示: <span id="logCount">0</span> 条

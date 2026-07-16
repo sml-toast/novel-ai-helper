@@ -1,4 +1,4 @@
-const apiBase = 'http://39.102.76.107:20128/v1';
+const apiBase = `${location.protocol}//${location.hostname}:8787/api/novel`;
 
 // ── Logging System ──
 const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
@@ -40,7 +40,6 @@ function clearLogs() {
 function compressLogs() {
   const entries = JSON.parse(localStorage.getItem('novel_logs') || '[]');
   if (entries.length <= 10) return;
-  // Keep last 100 entries, compress older ones into summary
   const recent = entries.slice(-100);
   const oldEntries = entries.slice(0, -100);
   if (oldEntries.length > 0) {
@@ -59,20 +58,25 @@ function compressLogs() {
   renderLogPanel();
 }
 
+function openLogDrawer() {
+  openDrawer('log');
+  renderLogPanel();
+}
+
 function renderLogPanel() {
   const container = document.getElementById('logList');
   if (!container) return;
-  
+
   const levelFilter = document.getElementById('logLevelFilter')?.value || 'DEBUG';
   const entries = getLogs(levelFilter);
-  
+
   const levelColors = {
     DEBUG: '#6c757d',
     INFO: '#0d6efd',
     WARN: '#ffc107',
     ERROR: '#dc3545'
   };
-  
+
   container.innerHTML = entries.map(entry => {
     const color = levelColors[entry.level] || '#6c757d';
     return `
@@ -87,19 +91,16 @@ function renderLogPanel() {
       </div>
     `;
   }).join('');
-  
-  // Update count
+
   const countEl = document.getElementById('logCount');
   if (countEl) countEl.textContent = `${entries.length} 条`;
 }
 
-// Initialize logs from storage
 try {
   logEntries = JSON.parse(localStorage.getItem('novel_logs') || '[]');
 } catch (e) {
   logEntries = [];
 }
-
 
 const fallbackState = {
   project: {
@@ -211,12 +212,8 @@ let activeGraphType = 'all';
 
 async function apiFetch(path, options = {}) {
   const response = await fetch(`${apiBase}${path}`, {
-    headers: { 
-      'Authorization': 'Bearer sk-6afe15f60ab05ce8-x1cjv4-81b4fac0',
-      ...options.headers
-    },
     ...options,
-    'content-type': 'application/json'
+    headers: { 'content-type': 'application/json', ...(options.headers || {}) }
   });
   if (!response.ok) throw new Error(`API ${response.status}`);
   return response.json();
@@ -383,17 +380,11 @@ function closeDrawers() {
   });
 }
 
-function openLogDrawer() {
-  openDrawer('log');
-  renderLogPanel();
-}
-
 function flashAssist(title, body, tone = '') {
   assistFeed.insertAdjacentHTML('afterbegin', renderAssistCard({ title, body, tone }));
 }
 
-log("INFO", "AI", `启动任务: ${taskType}`);
-  $& {
+async function runAi(taskType) {
   if (!apiOnline) {
     flashAssist(taskLabels[taskType] || '本地演示', 'API 未启动，当前为本地演示模式。');
     return;
@@ -409,8 +400,7 @@ log("INFO", "AI", `启动任务: ${taskType}`);
   }
 }
 
-log("INFO", "PROJECT", "创建项目");
-  $& {
+async function createProject() {
   const title = document.querySelector('#projectTitleInput').value.trim();
   const genre = document.querySelector('#projectGenreInput').value.trim();
   if (!apiOnline) return flashAssist('项目创建', 'API 未启动，无法写入 SQLite。', 'warning');
@@ -431,8 +421,7 @@ log("INFO", "PROJECT", "创建项目");
   }
 }
 
-log("INFO", "CHAPTER", "新建章节");
-  $& {
+async function createChapter() {
   const title = document.querySelector('#chapterTitleInput').value.trim();
   if (!apiOnline) return flashAssist('新建章节', 'API 未启动，无法写入 SQLite。', 'warning');
   try {
@@ -448,8 +437,7 @@ log("INFO", "CHAPTER", "新建章节");
   }
 }
 
-log("INFO", "KNOWLEDGE", "导入知识");
-  $& {
+async function importKnowledge() {
   const title = document.querySelector('#knowledgeTitleInput').value.trim();
   const body = document.querySelector('#knowledgeBodyInput').value.trim();
   if (!apiOnline) return flashAssist('知识导入', 'API 未启动，无法写入知识库。', 'warning');
@@ -466,8 +454,7 @@ log("INFO", "KNOWLEDGE", "导入知识");
   }
 }
 
-log("INFO", "VERSION", "加载版本历史");
-  $& {
+async function loadVersions() {
   const list = document.querySelector('#versionList');
   if (!apiOnline) {
     list.innerHTML = '<article class="version-card"><h3>本地演示</h3><p>API 未启动，暂无 SQLite 版本历史。</p></article>';
@@ -487,8 +474,7 @@ log("INFO", "VERSION", "加载版本历史");
   }
 }
 
-log("INFO", "VERSION", `回滚到版本 ${version}`);
-  $& {
+async function rollbackVersion(version) {
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/rollback`, { method: 'POST', body: JSON.stringify({ version }) });
     activeChapter = result.chapter;
@@ -502,8 +488,7 @@ log("INFO", "VERSION", `回滚到版本 ${version}`);
   }
 }
 
-log("INFO", "PUBLISH", `操作发布任务 ${taskId}: ${action}`);
-  $& {
+async function handlePublishAction(taskId, action) {
   if (!apiOnline) return flashAssist('发布模拟', 'API 未启动，当前无法更新发布任务。', 'warning');
   try {
     await apiFetch(`/publish/${taskId}/${action}`, { method: 'POST' });
@@ -515,8 +500,7 @@ log("INFO", "PUBLISH", `操作发布任务 ${taskId}: ${action}`);
   }
 }
 
-log("INFO", "PLATFORM", "保存平台配置");
-  $& {
+async function savePlatform() {
   const platform = document.querySelector('#platformNameInput').value.trim();
   if (!apiOnline) return flashAssist('平台配置', 'API 未启动，无法保存平台配置。', 'warning');
   try {
@@ -535,8 +519,7 @@ log("INFO", "PLATFORM", "保存平台配置");
   }
 }
 
-log("INFO", "PUBLISH", "创建定时发布");
-  $& {
+async function schedulePublish() {
   const platform = document.querySelector('#platformNameInput').value.trim();
   if (!apiOnline) return flashAssist('定时发布', 'API 未启动，无法创建发布任务。', 'warning');
   try {
@@ -552,8 +535,7 @@ log("INFO", "PUBLISH", "创建定时发布");
   }
 }
 
-log("INFO", "DASHBOARD", "刷新仪表盘");
-  $& {
+async function refreshDashboard() {
   const container = document.querySelector('#dashboardStats');
   if (!container) return;
   if (!apiOnline) {
@@ -596,8 +578,7 @@ function renderStatCards(stats) {
   ].map(([label, value]) => `<div class="stat-card"><strong>${value}</strong><span>${label}</span></div>`).join('');
 }
 
-log("INFO", "HISTORY", "加载AI历史");
-  $& {
+async function loadHistory() {
   const list = document.querySelector('#activityLog');
   if (!apiOnline) {
     list.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>API 未启动，暂无 AI 历史。</p></article>';
@@ -617,8 +598,7 @@ log("INFO", "HISTORY", "加载AI历史");
   }
 }
 
-log("INFO", "AUDIT", "加载审计日志");
-  $& {
+async function loadAudit() {
   const list = document.querySelector('#activityLog');
   if (!apiOnline) {
     list.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>API 未启动，暂无审计日志。</p></article>';
@@ -637,8 +617,7 @@ log("INFO", "AUDIT", "加载审计日志");
   }
 }
 
-log("INFO", "GOAL", "保存写作目标");
-  $& {
+async function saveGoal() {
   if (!apiOnline) return flashAssist('写作目标', 'API 未启动，无法保存目标。', 'warning');
   try {
     await apiFetch('/goals', { method: 'POST', body: JSON.stringify({ dailyWords: Number(document.querySelector('#dailyGoalInput').value || 0), deadline: '2026-08-31', note: '保持稳定日更节奏。' }) });
@@ -649,8 +628,7 @@ log("INFO", "GOAL", "保存写作目标");
   }
 }
 
-log("INFO", "PROGRESS", "添加写作进度");
-  $& {
+async function addProgress() {
   if (!apiOnline) return flashAssist('写作进度', 'API 未启动，无法记录进度。', 'warning');
   try {
     await apiFetch('/progress', { method: 'POST', body: JSON.stringify({ words: Number(document.querySelector('#progressWordsInput').value || 0), note: '手动记录写作进度。' }) });
@@ -661,8 +639,7 @@ log("INFO", "PROGRESS", "添加写作进度");
   }
 }
 
-log("INFO", "ARCHIVE", "归档当前章节");
-  $& {
+async function archiveActiveChapter() {
   if (!apiOnline) return flashAssist('章节归档', 'API 未启动，无法归档章节。', 'warning');
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/archive`, { method: 'POST' });
@@ -675,8 +652,7 @@ log("INFO", "ARCHIVE", "归档当前章节");
   }
 }
 
-log("INFO", "KNOWLEDGE", `删除知识条目 ${id}`);
-  $& {
+async function deleteKnowledgeEntry(id) {
   if (!id || !apiOnline) return flashAssist('知识删除', 'API 未启动或知识条目不可删除。', 'warning');
   try {
     const result = await apiFetch(`/knowledge/${id}/delete`, { method: 'POST' });
@@ -690,8 +666,7 @@ log("INFO", "KNOWLEDGE", `删除知识条目 ${id}`);
   }
 }
 
-log("INFO", "FEEDBACK", `提交AI反馈 ${taskId}`);
-  $& {
+async function sendAiFeedback(taskId) {
   if (!apiOnline) return flashAssist('AI 反馈', 'API 未启动，无法提交反馈。', 'warning');
   try {
     await apiFetch(`/ai/tasks/${taskId}/feedback`, { method: 'POST', body: JSON.stringify({ rating: 5, note: '前端标记有用' }) });
@@ -701,8 +676,7 @@ log("INFO", "FEEDBACK", `提交AI反馈 ${taskId}`);
   }
 }
 
-log("INFO", "ANNOTATION", "添加批注");
-  $& {
+async function addAnnotation() {
   if (!apiOnline) return flashAssist('章节批注', 'API 未启动，无法保存批注。', 'warning');
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/annotations`, {
@@ -720,8 +694,7 @@ log("INFO", "ANNOTATION", "添加批注");
   }
 }
 
-log("INFO", "ANNOTATION", "加载批注列表");
-  $& {
+async function loadAnnotations() {
   const log = document.querySelector('#editorialLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无批注。</p></article>';
   try {
@@ -732,8 +705,7 @@ log("INFO", "ANNOTATION", "加载批注列表");
   }
 }
 
-log("INFO", "TODO", "添加待办事项");
-  $& {
+async function addTodo() {
   if (!apiOnline) return flashAssist('创作待办', 'API 未启动，无法保存待办。', 'warning');
   try {
     const result = await apiFetch('/todos', { method: 'POST', body: JSON.stringify({ title: document.querySelector('#todoTitleInput').value.trim(), dueAt: '2026-07-20' }) });
@@ -744,8 +716,7 @@ log("INFO", "TODO", "添加待办事项");
   }
 }
 
-log("INFO", "TODO", "加载待办列表");
-  $& {
+async function loadTodos() {
   const log = document.querySelector('#editorialLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无待办。</p></article>';
   try {
@@ -756,8 +727,7 @@ log("INFO", "TODO", "加载待办列表");
   }
 }
 
-log("INFO", "TODO", `切换待办状态 ${id}`);
-  $& {
+async function toggleTodoStatus(id) {
   try {
     await apiFetch(`/todos/${id}/toggle`, { method: 'POST' });
     flashAssist('待办状态已更新', `任务 ${id} 状态已切换。`);
@@ -767,8 +737,7 @@ log("INFO", "TODO", `切换待办状态 ${id}`);
   }
 }
 
-log("INFO", "GLOSSARY", "添加术语");
-  $& {
+async function addGlossary() {
   if (!apiOnline) return flashAssist('术语表', 'API 未启动，无法保存术语。', 'warning');
   try {
     const term = document.querySelector('#glossaryTermInput').value.trim();
@@ -780,8 +749,7 @@ log("INFO", "GLOSSARY", "添加术语");
   }
 }
 
-log("INFO", "GLOSSARY", "加载术语列表");
-  $& {
+async function loadGlossary() {
   const log = document.querySelector('#riskLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无术语。</p></article>';
   try {
@@ -792,8 +760,7 @@ log("INFO", "GLOSSARY", "加载术语列表");
   }
 }
 
-log("INFO", "SENSITIVE", "敏感词检查");
-  $& {
+async function sensitiveCheck() {
   const log = document.querySelector('#riskLog');
   if (!apiOnline) return flashAssist('敏感词检查', 'API 未启动，无法检查。', 'warning');
   try {
@@ -807,8 +774,7 @@ log("INFO", "SENSITIVE", "敏感词检查");
   }
 }
 
-log("INFO", "CHARACTER", "添加角色");
-  $& {
+async function addCharacter() {
   if (!apiOnline) return flashAssist('角色档案', 'API 未启动，无法保存角色。', 'warning');
   try {
     const result = await apiFetch('/characters', {
@@ -827,8 +793,7 @@ log("INFO", "CHARACTER", "添加角色");
   }
 }
 
-log("INFO", "CHARACTER", "加载角色列表");
-  $& {
+async function loadCharacters() {
   const log = document.querySelector('#storyBibleLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无角色。</p></article>';
   try {
@@ -839,8 +804,7 @@ log("INFO", "CHARACTER", "加载角色列表");
   }
 }
 
-log("INFO", "TIMELINE", "添加时间线");
-  $& {
+async function addTimeline() {
   if (!apiOnline) return flashAssist('时间线', 'API 未启动，无法保存时间线。', 'warning');
   try {
     const result = await apiFetch('/timeline', {
@@ -854,8 +818,7 @@ log("INFO", "TIMELINE", "添加时间线");
   }
 }
 
-log("INFO", "TIMELINE", "加载时间线");
-  $& {
+async function loadTimeline() {
   const log = document.querySelector('#storyBibleLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无时间线。</p></article>';
   try {
@@ -866,8 +829,7 @@ log("INFO", "TIMELINE", "加载时间线");
   }
 }
 
-log("INFO", "SCENE", "添加场景");
-  $& {
+async function addScene() {
   if (!apiOnline) return flashAssist('场景库', 'API 未启动，无法保存场景。', 'warning');
   try {
     const result = await apiFetch('/scenes', { method: 'POST', body: JSON.stringify({ name: document.querySelector('#sceneNameInput').value.trim(), mood: document.querySelector('#sceneMoodInput').value.trim(), description: '场景细节待后续扩写。' }) });
@@ -878,8 +840,7 @@ log("INFO", "SCENE", "添加场景");
   }
 }
 
-log("INFO", "SCENE", "加载场景列表");
-  $& {
+async function loadScenes() {
   const log = document.querySelector('#worldBuilderLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无场景。</p></article>';
   try {
@@ -890,8 +851,7 @@ log("INFO", "SCENE", "加载场景列表");
   }
 }
 
-log("INFO", "WORLD", "添加世界观设定");
-  $& {
+async function addWorld() {
   if (!apiOnline) return flashAssist('世界观设定', 'API 未启动，无法保存设定。', 'warning');
   try {
     const result = await apiFetch('/world', { method: 'POST', body: JSON.stringify({ category: document.querySelector('#worldCategoryInput').value.trim(), title: document.querySelector('#worldTitleInput').value.trim(), content: '该设定用于约束后续剧情与角色行为。' }) });
@@ -902,8 +862,7 @@ log("INFO", "WORLD", "添加世界观设定");
   }
 }
 
-log("INFO", "WORLD", "加载世界观列表");
-  $& {
+async function loadWorld() {
   const log = document.querySelector('#worldBuilderLog');
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无设定。</p></article>';
   try {
@@ -914,8 +873,7 @@ log("INFO", "WORLD", "加载世界观列表");
   }
 }
 
-log("INFO", "SETTINGS", "保存AI配置");
-  $& {
+async function saveAiSettings() {
   if (!apiOnline) return flashAssist('AI 配置', 'API 未启动，无法保存 AI 配置。', 'warning');
   try {
     const result = await apiFetch('/settings/ai', {
@@ -931,8 +889,7 @@ log("INFO", "SETTINGS", "保存AI配置");
   }
 }
 
-log("INFO", "PROMPT", "保存提示词");
-  $& {
+async function savePrompt() {
   if (!apiOnline) return flashAssist('Prompt 模板', 'API 未启动，无法保存 Prompt。', 'warning');
   try {
     const result = await apiFetch('/prompts', {
@@ -949,8 +906,7 @@ log("INFO", "PROMPT", "保存提示词");
   }
 }
 
-log("INFO", "PROMPT", "加载提示词列表");
-  $& {
+async function loadPrompts() {
   const log = document.querySelector('#configLog');
   if (!apiOnline) {
     log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>API 未启动，暂无 Prompt 模板。</p></article>';
@@ -969,8 +925,7 @@ log("INFO", "PROMPT", "加载提示词列表");
   }
 }
 
-log("INFO", "KNOWLEDGE", "批量导入知识");
-  $& {
+async function bulkKnowledge() {
   if (!apiOnline) return flashAssist('批量知识导入', 'API 未启动，无法写入知识库。', 'warning');
   try {
     const result = await apiFetch('/knowledge/bulk', {
@@ -986,8 +941,7 @@ log("INFO", "KNOWLEDGE", "批量导入知识");
   }
 }
 
-log("INFO", "EXPORT", "导出项目文件");
-  $& {
+async function exportProjectFile() {
   if (!apiOnline) return flashAssist('项目导出', 'API 未启动，无法导出项目。', 'warning');
   try {
     const data = await apiFetch('/export/project');
@@ -998,8 +952,7 @@ log("INFO", "EXPORT", "导出项目文件");
   }
 }
 
-log("INFO", "EXPORT", "导出章节文件");
-  $& {
+async function exportChapterFile() {
   if (!apiOnline) return flashAssist('章节导出', 'API 未启动，无法导出章节。', 'warning');
   try {
     const data = await apiFetch(`/export/chapters/${activeChapter.id}`);
@@ -1022,8 +975,7 @@ function downloadFile(filename, content, type) {
   URL.revokeObjectURL(url);
 }
 
-log("INFO", "DRAFT", "保存草稿");
-  $& {
+async function saveDraft() {
   activeChapter.content = editor.value;
   if (!apiOnline) {
     flashAssist('章节已存稿', 'API 未启动，已保存在当前浏览器演示状态。');
@@ -1041,8 +993,7 @@ log("INFO", "DRAFT", "保存草稿");
   }
 }
 
-log("INFO", "KNOWLEDGE", "搜索知识库");
-  $& {
+async function searchKnowledge() {
   const query = document.querySelector('#knowledgeSearch').value.trim();
   if (!apiOnline) {
     flashAssist('历史与文献搜索', 'API 未启动，已模拟召回：黑潮设定、星火徽章、角色弧光、平台规则。');
@@ -1183,7 +1134,6 @@ document.addEventListener('click', event => {
   if (action === 'refresh-dashboard') return refreshDashboard();
   if (action === 'load-history') return loadHistory();
   if (action === 'load-audit') return loadAudit();
-  if (action === 'open-log') return openLogDrawer();
   if (action === 'save-ai-settings') return saveAiSettings();
   if (action === 'save-prompt') return savePrompt();
   if (action === 'load-prompts') return loadPrompts();
@@ -1209,6 +1159,14 @@ document.addEventListener('click', event => {
   if (action === 'add-world') return addWorld();
   if (action === 'load-world') return loadWorld();
   if (action === 'new-project') return flashAssist('新建项目入口', '全栈实现时将进入项目创建向导：题材、平台、风格、AI 模型与知识库范围。');
+  if (action === 'open-log') return openLogDrawer();
+  if (action === 'compress-logs') return compressLogs();
+  if (action === 'clear-logs') return clearLogs();
+  if (action === 'refresh-logs') return renderLogPanel();
+});
+
+document.getElementById('logLevelFilter')?.addEventListener('change', () => {
+  renderLogPanel();
 });
 
 editor.addEventListener('input', updateWordCount);
