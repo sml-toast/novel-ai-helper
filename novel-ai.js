@@ -1,5 +1,11 @@
 const apiBase = `${location.protocol}//${location.hostname}:${window.NOVEL_API_PORT || 8787}/api/novel`;
 
+// ── HTML sanitization ──
+function escapeHtml(str) {
+  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  return String(str).replace(/[&<>"']/g, c => map[c]);
+}
+
 // ── Logging System ──
 const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 let logLevel = parseInt(localStorage.getItem('novel_log_level') || '0', 10);
@@ -86,12 +92,12 @@ function renderLogPanel() {
     return `
       <div class="log-entry" style="border-left: 3px solid ${color}; padding: 8px; margin-bottom: 4px; background: var(--surface); border-radius: 4px;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-          <span style="font-weight: bold; color: ${color};">${entry.level}</span>
+          <span style="font-weight: bold; color: ${color};">${escapeHtml(entry.level)}</span>
           <small style="color: var(--text-secondary);">${new Date(entry.timestamp).toLocaleString()}</small>
         </div>
-        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 2px;">[${entry.category}]</div>
-        <div style="font-size: 13px;">${entry.message}</div>
-        <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">章节: ${entry.activeChapter}</div>
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 2px;">[${escapeHtml(entry.category)}]</div>
+        <div style="font-size: 13px;">${escapeHtml(entry.message)}</div>
+        <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">章节: ${escapeHtml(entry.activeChapter)}</div>
       </div>
     `;
   }).join('');
@@ -265,9 +271,9 @@ function renderProject() {
 
 function renderChapters() {
   document.querySelector('#chapterList').innerHTML = state.chapters.map(chapter => `
-    <button class="chapter-item ${chapter.id === activeChapter.id ? 'active' : ''}" type="button" data-chapter-id="${chapter.id}">
-      <strong>${chapter.title}</strong>
-      <span>${chapter.status}</span>
+    <button class="chapter-item ${chapter.id === activeChapter.id ? 'active' : ''}" type="button" data-chapter-id="${escapeHtml(String(chapter.id))}">
+      <strong>${escapeHtml(chapter.title)}</strong>
+      <span>${escapeHtml(chapter.status || '')}</span>
     </button>
   `).join('');
 }
@@ -288,7 +294,7 @@ function renderAssist(tab = 'ideas') {
 }
 
 function renderAssistCard(item) {
-  return `<article class="assist-card ${item.tone || ''}"><h3>${item.title}</h3><p>${item.body}</p></article>`;
+  return `<article class="assist-card ${item.tone || ''}"><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(item.body)}</p></article>`;
 }
 
 function renderKnowledge(knowledge) {
@@ -297,15 +303,15 @@ function renderKnowledge(knowledge) {
 }
 
 function renderKnowledgeCard(entry) {
-  return `<article class="knowledge-card"><span class="tag">${entry.source || entry.scope || '知识库'}</span><h3>${entry.title}</h3><p>${entry.body}</p><button type="button" data-knowledge-id="${entry.id || ''}">删除</button></article>`;
+  return `<article class="knowledge-card"><span class="tag">${escapeHtml(entry.source || entry.scope || '知识库')}</span><h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.body)}</p><button type="button" data-knowledge-id="${escapeHtml(String(entry.id || ''))}">删除</button></article>`;
 }
 
 function renderRelations() {
   document.querySelector('#relationList').innerHTML = state.relations.map(row => `
     <article class="relation-item">
-      <span class="tag">${row.relation_type}</span>
-      <h3>${row.source_name} ↔ ${row.target_name}</h3>
-      <p>${row.description}</p>
+      <span class="tag">${escapeHtml(row.relation_type)}</span>
+      <h3>${escapeHtml(row.source_name)} ↔ ${escapeHtml(row.target_name)}</h3>
+      <p>${escapeHtml(row.description)}</p>
     </article>
   `).join('');
 }
@@ -313,12 +319,12 @@ function renderRelations() {
 function renderPublishBoard(tasks = state.publishTasks) {
   document.querySelector('#publishBoard').innerHTML = tasks.map(task => `
     <article class="publish-card">
-      <span class="tag status-${task.status}">${formatPublishStatus(task.status)}</span>
-      <h3>${task.chapter_title || task.title || '未命名章节'}</h3>
-      <p>${task.platform} · ${formatDate(task.scheduled_at)}</p>
+      <span class="tag status-${task.status}">${escapeHtml(formatPublishStatus(task.status))}</span>
+      <h3>${escapeHtml(task.chapter_title || task.title || '未命名章节')}</h3>
+      <p>${escapeHtml(task.platform)} · ${escapeHtml(formatDate(task.scheduled_at))}</p>
       <div class="card-actions">
-        <button type="button" data-publish-id="${task.id}" data-publish-action="simulate">模拟推送</button>
-        <button type="button" data-publish-id="${task.id}" data-publish-action="retry">重试</button>
+        <button type="button" data-publish-id="${escapeHtml(String(task.id))}" data-publish-action="simulate">模拟推送</button>
+        <button type="button" data-publish-id="${escapeHtml(String(task.id))}" data-publish-action="retry">重试</button>
       </div>
     </article>
   `).join('');
@@ -337,7 +343,7 @@ function renderNodeMap(graph = state.graph) {
         return `<line x1="${source.x + 46}" y1="${source.y + 46}" x2="${target.x + 46}" y2="${target.y + 46}" />`;
       }).join('')}
     </svg>
-    ${positioned.map(node => `<button class="node ${node.type === 'core' ? 'core' : ''} node-${node.group}" style="left:${node.x}px;top:${node.y}px" type="button" data-node-id="${node.id}">${node.label}</button>`).join('')}
+    ${positioned.map(node => `<button class="node ${node.type === 'core' ? 'core' : ''} node-${node.group}" style="left:${node.x}px;top:${node.y}px" type="button" data-node-id="${escapeHtml(node.id)}">${escapeHtml(node.label)}</button>`).join('')}
   `;
   document.querySelector('#graphStats').innerHTML = renderGraphStats(graph);
   document.querySelector('#graphDetail').textContent = `${graphTypeLabels[graph?.type || activeGraphType] || '图谱'} · ${graph?.stats?.nodeCount || positioned.length} 节点 / ${graph?.stats?.edgeCount || edges.length} 连接`;
@@ -357,7 +363,7 @@ function renderGraphStats(graph = {}) {
 function showNodeDetail(nodeId) {
   const node = (state.graph?.nodes || []).find(item => item.id === nodeId);
   if (!node) return;
-  document.querySelector('#graphDetail').innerHTML = `<strong>${node.label}</strong><span>${node.type} · ${node.group}</span><p>${node.detail || '暂无详情'}</p>`;
+  document.querySelector('#graphDetail').innerHTML = `<strong>${escapeHtml(node.label)}</strong><span>${escapeHtml(node.type)} · ${escapeHtml(node.group)}</span><p>${escapeHtml(node.detail || '暂无详情')}</p>`;
 }
 
 function formatPublishStatus(status) {
@@ -468,9 +474,9 @@ async function loadVersions() {
     const result = await apiFetch(`/chapters/${activeChapter.id}/versions`);
     list.innerHTML = result.versions.map(version => `
       <article class="version-card">
-        <h3>版本 ${version.version}</h3>
-        <p>${version.content.slice(0, 90)}${version.content.length > 90 ? '...' : ''}</p>
-        <button type="button" data-version="${version.version}">回滚到此版本</button>
+        <h3>版本 ${escapeHtml(String(version.version))}</h3>
+        <p>${escapeHtml(version.content.slice(0, 90))}${version.content.length > 90 ? '...' : ''}</p>
+        <button type="button" data-version="${escapeHtml(String(version.version))}">回滚到此版本</button>
       </article>
     `).join('');
   } catch (error) {
@@ -592,9 +598,9 @@ async function loadHistory() {
     const result = await apiFetch('/ai/history?limit=12');
     list.innerHTML = result.tasks.map(task => `
       <article class="log-card">
-        <h3>${taskLabels[task.task_type] || task.task_type} · ${task.provider}</h3>
-        <p>${(task.output?.[0]?.body || '').slice(0, 110)}</p>
-        <button type="button" data-ai-task-id="${task.id}">有用</button>
+        <h3>${escapeHtml(taskLabels[task.task_type] || task.task_type)} · ${escapeHtml(task.provider)}</h3>
+        <p>${escapeHtml((task.output?.[0]?.body || '').slice(0, 110))}</p>
+        <button type="button" data-ai-task-id="${escapeHtml(String(task.id))}">有用</button>
       </article>
     `).join('');
   } catch (error) {
@@ -612,8 +618,8 @@ async function loadAudit() {
     const result = await apiFetch('/audit?limit=12');
     list.innerHTML = result.logs.map(log => `
       <article class="log-card">
-        <h3>${log.action}</h3>
-        <p>${new Date(log.created_at).toLocaleString('zh-CN', { hour12: false })} · ${JSON.stringify(log.payload)}</p>
+        <h3>${escapeHtml(log.action)}</h3>
+        <p>${new Date(log.created_at).toLocaleString('zh-CN', { hour12: false })} · ${escapeHtml(JSON.stringify(log.payload))}</p>
       </article>
     `).join('');
   } catch (error) {
@@ -703,7 +709,7 @@ async function loadAnnotations() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无批注。</p></article>';
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/annotations`);
-    log.innerHTML = result.annotations.map(item => `<article class="log-card"><h3>${item.severity} · ${item.quote}</h3><p>${item.note}</p></article>`).join('');
+    log.innerHTML = result.annotations.map(item => `<article class="log-card"><h3>${escapeHtml(item.severity)} · ${escapeHtml(item.quote)}</h3><p>${escapeHtml(item.note)}</p></article>`).join('');
   } catch (error) {
     flashAssist('批注加载失败', error.message, 'danger');
   }
@@ -725,7 +731,7 @@ async function loadTodos() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无待办。</p></article>';
   try {
     const result = await apiFetch('/todos');
-    log.innerHTML = result.todos.map(todo => `<article class="log-card"><h3>${todo.status} · ${todo.title}</h3><p>${todo.due_at || '无截止日期'}</p><button type="button" data-todo-id="${todo.id}">切换状态</button></article>`).join('');
+    log.innerHTML = result.todos.map(todo => `<article class="log-card"><h3>${escapeHtml(todo.status)} · ${escapeHtml(todo.title)}</h3><p>${escapeHtml(todo.due_at || '无截止日期')}</p><button type="button" data-todo-id="${escapeHtml(String(todo.id))}">切换状态</button></article>`).join('');
   } catch (error) {
     flashAssist('待办加载失败', error.message, 'danger');
   }
@@ -758,7 +764,7 @@ async function loadGlossary() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无术语。</p></article>';
   try {
     const result = await apiFetch('/glossary');
-    log.innerHTML = result.terms.map(term => `<article class="log-card"><h3>${term.category} · ${term.term}</h3><p>${term.definition}</p></article>`).join('');
+    log.innerHTML = result.terms.map(term => `<article class="log-card"><h3>${escapeHtml(term.category)} · ${escapeHtml(term.term)}</h3><p>${escapeHtml(term.definition)}</p></article>`).join('');
   } catch (error) {
     flashAssist('术语加载失败', error.message, 'danger');
   }
@@ -770,7 +776,7 @@ async function sensitiveCheck() {
   try {
     const result = await apiFetch('/sensitive/check', { method: 'POST', body: JSON.stringify({ text: document.querySelector('#sensitiveTextInput').value }) });
     log.innerHTML = result.matches.length
-      ? result.matches.map(match => `<article class="log-card danger"><h3>${match.severity} · ${match.term}</h3><p>${match.suggestion}</p></article>`).join('')
+      ? result.matches.map(match => `<article class="log-card danger"><h3>${escapeHtml(match.severity)} · ${escapeHtml(match.term)}</h3><p>${escapeHtml(match.suggestion)}</p></article>`).join('')
       : '<article class="log-card"><h3>检查通过</h3><p>未命中敏感词规则。</p></article>';
     flashAssist('敏感词检查完成', `命中 ${result.matches.length} 条规则。`);
   } catch (error) {
@@ -802,7 +808,7 @@ async function loadCharacters() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无角色。</p></article>';
   try {
     const result = await apiFetch('/characters');
-    log.innerHTML = result.characters.map(item => `<article class="log-card"><h3>${item.name} · ${item.role}</h3><p>${item.motivation} / ${item.arc}</p></article>`).join('');
+    log.innerHTML = result.characters.map(item => `<article class="log-card"><h3>${escapeHtml(item.name)} · ${escapeHtml(item.role)}</h3><p>${escapeHtml(item.motivation)} / ${escapeHtml(item.arc)}</p></article>`).join('');
   } catch (error) {
     flashAssist('角色加载失败', error.message, 'danger');
   }
@@ -827,7 +833,7 @@ async function loadTimeline() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无时间线。</p></article>';
   try {
     const result = await apiFetch('/timeline');
-    log.innerHTML = result.events.map(item => `<article class="log-card"><h3>${item.event_time} · ${item.title}</h3><p>${item.description}</p></article>`).join('');
+    log.innerHTML = result.events.map(item => `<article class="log-card"><h3>${escapeHtml(item.event_time)} · ${escapeHtml(item.title)}</h3><p>${escapeHtml(item.description)}</p></article>`).join('');
   } catch (error) {
     flashAssist('时间线加载失败', error.message, 'danger');
   }
@@ -849,7 +855,7 @@ async function loadScenes() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无场景。</p></article>';
   try {
     const result = await apiFetch('/scenes');
-    log.innerHTML = result.scenes.map(item => `<article class="log-card"><h3>${item.name} · ${item.mood}</h3><p>${item.description}</p></article>`).join('');
+    log.innerHTML = result.scenes.map(item => `<article class="log-card"><h3>${escapeHtml(item.name)} · ${escapeHtml(item.mood)}</h3><p>${escapeHtml(item.description)}</p></article>`).join('');
   } catch (error) {
     flashAssist('场景加载失败', error.message, 'danger');
   }
@@ -871,7 +877,7 @@ async function loadWorld() {
   if (!apiOnline) return log.innerHTML = '<article class="log-card"><h3>本地演示</h3><p>暂无设定。</p></article>';
   try {
     const result = await apiFetch('/world');
-    log.innerHTML = result.settings.map(item => `<article class="log-card"><h3>${item.category} · ${item.title}</h3><p>${item.content}</p></article>`).join('');
+    log.innerHTML = result.settings.map(item => `<article class="log-card"><h3>${escapeHtml(item.category)} · ${escapeHtml(item.title)}</h3><p>${escapeHtml(item.content)}</p></article>`).join('');
   } catch (error) {
     flashAssist('世界观加载失败', error.message, 'danger');
   }
@@ -920,8 +926,8 @@ async function loadPrompts() {
     const result = await apiFetch('/prompts');
     log.innerHTML = result.prompts.map(prompt => `
       <article class="log-card">
-        <h3>${prompt.task_type} · ${prompt.title}</h3>
-        <p>${prompt.template}</p>
+        <h3>${escapeHtml(prompt.task_type)} · ${escapeHtml(prompt.title)}</h3>
+        <p>${escapeHtml(prompt.template)}</p>
       </article>
     `).join('');
   } catch (error) {
@@ -1042,7 +1048,10 @@ document.addEventListener('click', event => {
   const graphTypeButton = event.target.closest('[data-graph-type]');
   if (graphTypeButton) {
     activeGraphType = graphTypeButton.dataset.graphType;
-    document.querySelectorAll('[data-graph-type]').forEach(button => button.classList.toggle('active', button === graphTypeButton));
+    document.querySelectorAll('[data-graph-type]').forEach(button => {
+      button.classList.toggle('active', button === graphTypeButton);
+      button.setAttribute('aria-selected', String(button === graphTypeButton));
+    });
     return refreshGraph();
   }
 
@@ -1059,8 +1068,12 @@ document.addEventListener('click', event => {
 
   const tabButton = event.target.closest('[data-tab]');
   if (tabButton) {
-    document.querySelectorAll('[data-tab]').forEach(button => button.classList.remove('active'));
+    document.querySelectorAll('[data-tab]').forEach(button => {
+      button.classList.remove('active');
+      button.setAttribute('aria-selected', 'false');
+    });
     tabButton.classList.add('active');
+    tabButton.setAttribute('aria-selected', 'true');
     renderAssist(tabButton.dataset.tab);
     return;
   }

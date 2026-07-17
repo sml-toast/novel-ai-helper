@@ -147,9 +147,9 @@
             <span class="status-dot" id="apiStatus">连接中</span>
           </div>
           <div class="assist-tabs" role="tablist" aria-label="AI 助手分类">
-            <button class="active" type="button" data-tab="ideas">构思</button>
-            <button type="button" data-tab="checks">校验</button>
-            <button type="button" data-tab="risks">版权</button>
+            <button class="active" type="button" role="tab" aria-selected="true" data-tab="ideas">构思</button>
+            <button type="button" role="tab" aria-selected="false" data-tab="checks">校验</button>
+            <button type="button" role="tab" aria-selected="false" data-tab="risks">版权</button>
           </div>
           <div class="assist-feed" id="assistFeed"></div>
         </aside>
@@ -157,22 +157,22 @@
 
       <section class="feature-grid" aria-label="小说辅助功能">
         <article class="feature-card">
-          <div class="icon">🧠</div>
+          <div class="icon" aria-hidden="true">🧠</div>
           <h3>小说框架提炼</h3>
           <p>从已有章节提取三幕结构、主线任务、反派压力与爽点节奏。</p>
         </article>
         <article class="feature-card">
-          <div class="icon">🧩</div>
+          <div class="icon" aria-hidden="true">🧩</div>
           <h3>情节冲突校验</h3>
           <p>检查角色动机、时间线、道具出现、伏笔回收与设定矛盾。</p>
         </article>
         <article class="feature-card">
-          <div class="icon">👥</div>
+          <div class="icon" aria-hidden="true">👥</div>
           <h3>人物关系设计</h3>
           <p>维护角色立场、关系强度、秘密信息和成长线，辅助生成关系网。</p>
         </article>
         <article class="feature-card">
-          <div class="icon">🔎</div>
+          <div class="icon" aria-hidden="true">🔎</div>
           <h3>网络文献搜索</h3>
           <p>聚合网络资料、项目知识库和历史文档，为创作提供可追溯素材。</p>
         </article>
@@ -188,10 +188,10 @@
             <button class="ghost-btn" type="button" data-action="refresh-graph">刷新图谱</button>
           </div>
           <div class="graph-tabs" role="tablist" aria-label="图谱类型">
-            <button class="active" type="button" data-graph-type="all">综合图</button>
-            <button type="button" data-graph-type="knowledge">知识图</button>
-            <button type="button" data-graph-type="character">人物图</button>
-            <button type="button" data-graph-type="timeline">时间线</button>
+            <button class="active" type="button" role="tab" aria-selected="true" data-graph-type="all">综合图</button>
+            <button type="button" role="tab" aria-selected="false" data-graph-type="knowledge">知识图</button>
+            <button type="button" role="tab" aria-selected="false" data-graph-type="character">人物图</button>
+            <button type="button" role="tab" aria-selected="false" data-graph-type="timeline">时间线</button>
             <button type="button" data-graph-type="world">世界观</button>
           </div>
           <div class="graph-stats" id="graphStats"></div>
@@ -401,7 +401,7 @@
       </section>
     </main>
 
-    <section class="drawer" id="knowledgeDrawer" aria-label="知识库面板" aria-hidden="true">
+    <section class="drawer" id="knowledgeDrawer" role="dialog" aria-modal="true" aria-label="知识库面板" aria-hidden="true">
       <div class="drawer-head">
         <div>
           <span class="eyebrow">Knowledge Base</span>
@@ -425,7 +425,7 @@
       </div>
     </section>
 
-    <section class="drawer" id="publishDrawer" aria-label="发布计划面板" aria-hidden="true">
+    <section class="drawer" id="publishDrawer" role="dialog" aria-modal="true" aria-label="发布计划面板" aria-hidden="true">
       <div class="drawer-head">
         <div>
           <span class="eyebrow">Publish Center</span>
@@ -437,7 +437,7 @@
     </section>
   </div>
 
-    <section class="drawer" id="logDrawer" aria-label="系统日志面板" aria-hidden="true">
+    <section class="drawer" id="logDrawer" role="dialog" aria-modal="true" aria-label="系统日志面板" aria-hidden="true">
       <div class="drawer-head">
         <div>
           <span class="eyebrow">System Log</span>
