@@ -1,80 +1,57 @@
 # Novel AI Assistant - Task Plan
 
-## Phase 1: Core Editor (Completed ✅)
-- [x] Basic HTML structure
-- [x] CSS styling with variables
-- [x] Chapter editing functionality
-- [x] Word count tracking
-- [x] LocalStorage persistence
+| 项目 | 内容 |
+|---|---|
+| 文档日期 | 2026-09-05（纠偏重写：原版本停留在 2026-07 的「Phase 1-5」阶段划分，与实际进度严重脱节） |
+| 现状基线 | M4「可信可用」已交付，M5/M6 未开始 |
+| 待办明细 | 见 `doc/roadmap/roadmap.md`（本文只管里程碑与风险，不重复任务清单） |
 
-## Phase 2: AI Integration (In Progress 🔄)
-- [x] Mock AI response system
-- [x] Sync AI assist button
-- [x] Outline generation UI
-- [ ] Real AI backend integration
-- [ ] Streaming response support
-- [ ] Context window management
+## 一、实际里程碑（对齐提交记录）
 
-## Phase 3: Knowledge Base (Planned 📋)
-- [ ] Knowledge graph visualization
-- [ ] Character relation mapping
-- [ ] Plot thread tracking
-- [ ] Search functionality
-- [ ] Import/export knowledge
+| 里程碑 | 状态 | 时间 | 交付物 | 证据 |
+|---|---|---|---|---|
+| M1 · MVP | ✅ | 2026-07-12 | 编辑器、章节管理、AI mock、知识库面板 | 源仓库时代提交 |
+| M2 · 独立后端 | ✅ | 2026-07-16 | Node 内置模块后端、SQLite 持久化、Playwright 骨架 | 提交 57d3e20 |
+| M3 · 稳定化 | ✅ | 2026-07-17 | 日志系统、XSS 防护（escapeHtml 全覆盖）、code review 修复 | 提交 8047b6f / 87ecab7 / 96e1c92 |
+| M4 · 可信可用 | ✅ | 2026-09-05 | F073 密钥处置、F074 鉴权与本机绑定、F075 密钥加密 + 主密钥备份引导、F076×F086 防丢稿 + 草稿/版本分离、T003 DB 路径、T004 迁移框架 v1 | 提交 73154fc |
+| T009 · 测试防线 | ✅ | 2026-09-05 | API 契约 + 页面烟雾用例（交付时 13+11，F078 后扩至 17+11=28）；清除空过断言；测试库隔离；workers 放开 | 提交 20e0e66 + 本轮 |
+| T010 · 文档纠偏 | ✅ | 2026-09-05 | 竞品调研、增量 PRD、增量架构设计；架构/开发/测试/部署/路线图文档补齐 | 提交 a1b0946 + 本轮 |
+| **M4 收尾 · T008 导出/导入** | ✅ | 2026-09-05 | F078：导出补全 19 集合、`POST /import`（new 重映射 / replace 覆盖 + VACUUM INTO 自动备份）、`?projectId=` 导出参数、前端导入按钮；往返验证通过 | 本轮交付 |
+| **测试修复** | ✅ | 2026-09-05 | 修复 `novel-ai.html` 内联脚本覆盖夹具注入端口的缺陷（页面用例自 F077 起连不上测试 API）；测试夹具 abort 外部字体请求（防网络黑洞挂起页面加载） | 本轮交付，28 条用例全绿 |
+| M5 · 长篇结构化 | 📋 排期中 | — | 多项目 / FTS5 检索 / 提及反链 / 按需召回 / 流式 / 调度器等（T011–T018，≈19 人天） | roadmap §三 |
+| M6 · 创作增强 | 📋 排期中 | — | 伏笔 / 大纲树 / 前端模块化 / 专注模式 / 力导向图谱 / 多格式导出等（T019–T026，≈16 人天） | roadmap §四 |
 
-## Phase 4: Publishing Tools (Planned 📋)
-- [ ] Publish queue management
-- [ ] Platform API integration
-- [ ] Retry logic implementation
-- [ ] Publish schedule UI
-- [ ] Analytics dashboard
+> 原文档中的「Phase 2: Real AI backend（未做）」已被 M4 实际超越：真实 AI 调用（OpenAI 兼容协议）
+> 与密钥加密存储均已落地；「Phase 3/4 Planned」中的知识库、发布队列等 UI 亦已在 M1–M3 交付，
+> 剩余是能力深化（FTS5、调度器等）而非从零建设。
 
-## Phase 5: Advanced Features (Future 🔮)
-- [ ] Multi-project support
-- [ ] Collaborative editing
-- [ ] Version control system
-- [ ] Mobile responsive improvements
-- [ ] PWA offline mode
-- [ ] Voice input support
+## 二、当前工作流（每周节奏建议）
 
-## Milestones
+1. **动工前**：从 `doc/roadmap/roadmap.md` 取最高优先任务 → 读 design 文档对应实测节 → 补/确认契约用例。
+2. **实现中**：SQL 只进 `novel-db.js`；schema 变更走迁移；写操作留审计；innerHTML 过 `escapeHtml`。
+3. **收尾**：`npm test` 全绿 → 文档同步（functions.md / architecture.md 涉及时）→ 提交。
 
-### M1: MVP Ready (Done)
-- Date: 2026-07-12
-- Status: Completed
-- Deliverables: Editor, basic AI mock, knowledge panel
+## 三、风险评估（当前仍然开放的项）
 
-### M2: Production Ready
-- Target: 2026-08-01
-- Tasks: Real AI integration, error handling, performance optimization
+继承 design 文档风险登记册（§五，R1–R16），当前状态：
 
-### M3: Full Release
-- Target: 2026-09-01
-- Tasks: All features, testing, documentation, deployment
+| 风险 | 等级 | 状态 | 缓解 |
+|---|---|---|---|
+| R1 版本表膨胀 | 🔴 | ✅ 已缓解 | 草稿态不进版本表（F076 落地）；版本列表分页仍待 T016 |
+| R2 迁移失败半截 schema | 🔴 | ✅ 已缓解 | 迁移单事务 + 失败终止启动（T004）；备份流程见部署文档 |
+| R3 主密钥丢失密钥不可恢复 | 🔴 | ⚠️ 部分 | 备份引导 UI 已交付（F075 A4）；端到端加密云备份属远期想法 |
+| R4 API 绑定所有网卡 | 🔴 | ✅ 已修复 | X1 修复，显式 127.0.0.1（F074） |
+| R5 导入外键顺序脏数据 | 🟠 | ⏳ 待做 | 随 F078 导入回灌一并落地 |
+| R6/R7 node:sqlite experimental 与 Node 版本漂移 | 🟠 | ⚠️ 持续 | engines 锁 >=22.5.0；数据访问集中单文件；升级前跑测试 |
+| R11 SQLite 并发测试不稳 | 🟢 | ✅ 已缓解 | busy_timeout=5000（X3），workers=4 |
+| R15 前端单文件膨胀 | 🟠 | ⏳ 已排期 | 1805 行；T021 模块化建议 M5 后立即执行 |
+| R16 .data/ 无备份机制 | 🟠 | ⚠️ 部分 | 文件级备份流程已写入部署文档 §四；应用内自动备份随 F078 |
 
-## Risk Assessment
+完整 16 项风险与实测依据见 `doc/design/incremental-design-2026-09-02.md` §五。
 
-| Risk | Impact | Probability | Mitigation |
-|------|--------|-------------|------------|
-| AI service downtime | High | Medium | Fallback to local processing |
-| Storage quota exceeded | Medium | Low | Implement data cleanup |
-| Browser compatibility | Low | Low | Polyfills for ES2020 features |
-| Performance with large docs | Medium | Medium | Virtual scrolling, lazy loading |
+## 四、资源与协作
 
-## Resource Requirements
-
-- Development: 1 frontend developer
-- Design: 1 UI/UX designer (optional)
-- Testing: Manual + automated E2E
-- Infrastructure: Existing Vite build pipeline
-
-## Next Steps
-
-1. Complete real AI integration
-2. Add comprehensive error handling
-3. Implement performance optimizations
-4. Create mobile-responsive version
-5. Deploy to staging environment
-6. User acceptance testing
-7. Production release
-
+- 开发：1 名全栈（前后端同构，零依赖栈无专门运维负担）。
+- 测试：自动化（Playwright，见 `doc/testing-docs/test-automation.md`）+ 手工回归清单
+  （`doc/testing-docs/test-plan.md`）。
+- 基础设施：无需服务器；本机 Node 进程 ×2 + SQLite 单文件。部署细节见 `doc/deployment/deployment.md`。
