@@ -142,6 +142,20 @@
 
 ## API 连接配置
 
-- **Base URL**: `http://39.102.76.107:20128/v1`
-- **认证方式**: Bearer Token
-- **API Key**: `sk-6afe15f60ab05ce8-x1cjv4-81b4fac0`
+> **安全提示**：API Key 属于凭证，**严禁写入文档或提交到版本库**。
+> 历史版本曾在此处明文记录第三方端点与密钥，已于 2026-09-02 清除（对应需求 F073）。
+> 若你曾照抄过该密钥，请立即到服务商处**轮换失效**。
+
+配置通过以下两种方式提供，二选一即可：
+
+| 配置项 | 环境变量（推荐） | 设置面板（F075 后支持，密钥加密落库） |
+|---|---|---|
+| Base URL | `NOVEL_AI_BASE_URL` | 设置 → AI 配置 |
+| Model | `NOVEL_AI_MODEL` | 设置 → AI 配置 |
+| API Key | `NOVEL_AI_API_KEY` | 设置 → AI 配置（仅保存，永不回显明文） |
+
+- **认证方式**：Bearer Token
+- **凭据来源**：`process.env.NOVEL_AI_API_KEY`（`server/novel-ai-provider.js`），文档中不保存任何真实密钥
+- **未配置时**：AI 自动降级为本地 mock，界面标注「本地演示模式」，其余功能不受影响
+
+环境变量样例见仓库根目录 `.env.example`。

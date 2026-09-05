@@ -176,14 +176,14 @@
 
 ## API 连接配置
 
-所有按钮调用统一使用以下 API 基础地址：
-- **Base URL**: `http://39.102.76.107:20128/v1`
-- **认证方式**: Bearer Token
-- **API Key**: `sk-6afe15f60ab05ce8-x1cjv4-81b4fac0`
+所有按钮调用统一经由前端 `apiFetch()` 拼接本机 API 地址，外部大模型地址不在此处配置。
 
-### 请求头示例
+> **安全提示**：本文件历史版本曾明文记录第三方端点与 Bearer 密钥，已于 2026-09-02 清除（需求 F073）。
+> **严禁**在任何文档中填写真实 API Key —— 请改用环境变量 `NOVEL_AI_API_KEY`（见 `.env.example`）。
+
+### 请求头示例（由服务端自行附加，前端不接触密钥）
 ```http
-Authorization: Bearer sk-6afe15f60ab05ce8-x1cjv4-81b4fac0
+Authorization: Bearer ${process.env.NOVEL_AI_API_KEY}
 Content-Type: application/json
 ```
 

@@ -9,8 +9,8 @@
 - 日志系统测试
 
 ### 测试环境
-- Dev Server: `http://localhost:5174/novel-ai.html`
-- API Base: `http://39.102.76.107:20128/v1`
+- Dev Server: `http://localhost:5175/novel-ai.html`
+- API Base: 由环境变量 `NOVEL_AI_BASE_URL` 提供（未配置时走本地 mock，见 `.env.example`）
 - Browser: Chrome/Firefox/Safari
 
 ---

@@ -4,7 +4,7 @@
 
 ## 1. 主界面总览
 
-打开浏览器访问 `http://localhost:5174/novel-ai.html`，即可看到小说 AI 助手工作台的主界面。左侧是项目与章节导航，中间是写作区域，右侧是 AI 助手面板。
+打开浏览器访问 `http://localhost:5175/novel-ai.html`，即可看到小说 AI 助手工作台的主界面。左侧是项目与章节导航，中间是写作区域，右侧是 AI 助手面板。
 
 ![使用视图一览 01](image:///Users/simpleli/workspace/blog-design/doc/novel-ai/use-cases/01-overview.png)
 
@@ -63,7 +63,7 @@ AI 历史面板记录所有 AI 交互记录，方便用户回溯之前的建议�
 ## 10. 完整工作流示例
 
 1. 启动开发服务器: `npm run dev`
-2. 访问小说 AI 助手: `http://localhost:5174/novel-ai.html`
+2. 访问小说 AI 助手: `http://localhost:5175/novel-ai.html`
 3. 创建新项目或选择现有项目
 4. 在编辑器中编写章节内容
 5. 使用 AI 辅助功能获取写作建议

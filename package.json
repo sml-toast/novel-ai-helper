@@ -1,0 +1,21 @@
+{
+  "name": "novel-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Novel AI · 小说 AI 创作工作台（章节写作 / AI 同步辅助 / 知识库 / 人物关系 / 情节校验 / 定时推送）",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "api": "node server/novel-api.js",
+    "web": "node server/web-server.js",
+    "dev": "bash scripts/novel-dev.sh",
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report test-results/playwright-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
+  }
+}
