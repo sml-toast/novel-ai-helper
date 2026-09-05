@@ -96,7 +96,7 @@ if (req.method === 'POST' && url.pathname === '/api/novel/my-resource') {
 
 ```js
 {
-  version: 2,
+  version: 3,            // 当前已发布到 v2（性能索引），新迁移从 v3 递增
   name: '一句话说明',
   up(db) {
     safeExec(db, `CREATE TABLE IF NOT EXISTS my_table (...)`);

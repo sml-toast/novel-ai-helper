@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getBootstrapData, getDashboardStats, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { runAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
@@ -76,12 +76,17 @@ async function handle(req, res) {
   res.locals.corsOrigin = auth.corsOrigin;
 
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const bootstrap = getBootstrapData();
-  const projectId = bootstrap.project.id;
+  // 性能：bootstrap（全部章节正文 + 图谱构建）绝不在每个请求上无条件执行。
+  // 绝大多数分支只需要 projectId；/bootstrap、/chapters(POST)、/ai 各自按需取数。
+  // 实测（200 章 × 3KB）：此前每个轻量请求固定多付 ~5ms，且随章节数线性增长。
+  const projectId = getCurrentProjectId();
+  if (projectId == null) {
+    return send(res, 500, { error: 'no project initialized: database seeding failed or NOVEL_DB_PATH points to an empty database' });
+  }
 
   try {
     if (req.method === 'GET' && url.pathname === '/api/novel/bootstrap') {
-      return send(res, 200, bootstrap);
+      return send(res, 200, getBootstrapData());
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/dashboard') {
@@ -154,7 +159,7 @@ async function handle(req, res) {
       const body = await readJson(req);
       const chapter = createChapter({
         projectId,
-        title: body.title || `第 ${bootstrap.chapters.length + 1} 章 · 未命名章节`,
+        title: body.title || `第 ${countChapters(projectId) + 1} 章 · 未命名章节`,
         content: body.content || '在这里继续写作。'
       });
       return send(res, 201, { chapter });
@@ -344,15 +349,16 @@ async function handle(req, res) {
       // loadProjectSecret 不抛异常，解密失败会以 error 字段返回，交给 provider 转成可读提示，
       // 避免「主密钥丢了」被包装成一个无信息的 500。
       const secret = loadProjectSecret(projectId);
+      const aiContext = getAiContextData(projectId);
       const result = await runAiTask({
         taskType: body.taskType || 'sync',
-        project: bootstrap.project,
+        project: aiContext.project,
         chapter,
         apiKey: secret.apiKey,
         apiKeyError: secret.error,
         context: {
-          relations: bootstrap.relations,
-          knowledge: bootstrap.knowledge,
+          relations: aiContext.relations,
+          knowledge: aiContext.knowledge,
           promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
           selectedText: body.selectedText || ''
         }

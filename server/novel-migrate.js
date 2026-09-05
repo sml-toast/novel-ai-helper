@@ -46,8 +46,37 @@ export const MIGRATIONS = [
       safeExec(db, `ALTER TABLE chapter_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'auto'`);
       safeExec(db, `ALTER TABLE chapter_versions ADD COLUMN name TEXT NOT NULL DEFAULT ''`);
     }
+  },
+  {
+    version: 2,
+    name: '性能索引：project_id / chapter_id 外键列',
+    up(db) {
+      // SQLite 的 FOREIGN KEY 声明不会自动建索引，而本项目几乎全部查询都以
+      // project_id（或 chapter_id）为过滤条件。数据量小时全表扫描无感，
+      // 长篇（数百章 × 数千字 + 高频审计行）后会线性劣化，先补齐。
+      const indexes = [
+        `CREATE INDEX IF NOT EXISTS idx_chapters_project    ON chapters(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_versions_chapter    ON chapter_versions(chapter_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_characters_project  ON characters(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_relations_project   ON character_relations(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_knowledge_project   ON knowledge_entries(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_ai_tasks_project    ON ai_tasks(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_publish_project     ON publish_tasks(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_platforms_project   ON platform_configs(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_prompts_project     ON prompt_templates(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_goals_project       ON writing_goals(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_progress_day        ON writing_progress(project_id, progress_date)`,
+        `CREATE INDEX IF NOT EXISTS idx_todos_project       ON creative_todos(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_annotations_chapter ON chapter_annotations(chapter_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_glossary_project    ON glossary_terms(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_timeline_project    ON timeline_events(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_scenes_project      ON scene_locations(project_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_world_project       ON world_settings(project_id)`
+      ];
+      for (const sql of indexes) db.exec(sql);
+    }
   }
-  // v2 起由 M5/M6 任务追加：F080 提及表、F084 伏笔表、F083 情节线、F088 FTS5 bigram 重建
+  // v3 起由 M5/M6 任务追加：F080 提及表、F084 伏笔表、F083 情节线、F088 FTS5 bigram 重建
 ];
 
 /** 只读：当前 schema 版本 */

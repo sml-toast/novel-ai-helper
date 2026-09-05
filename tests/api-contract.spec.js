@@ -265,11 +265,12 @@ test.describe('API 契约 · 草稿态与版本态（F076）', () => {
 });
 
 test.describe('API 契约 · 迁移框架（T004）', () => {
-  test('13 迁移幂等：重复启动服务后 user_version 稳定为 1', async ({ request }) => {
-    expect(readUserVersion(), '服务首次启动应已完成 v1 迁移').toBe(1);
+  test('13 迁移幂等：重复启动服务后 user_version 稳定为 2', async ({ request }) => {
+    // v1 = F075 密钥列 + F086 版本语义；v2 = 外键性能索引
+    expect(readUserVersion(), '服务首次启动应已完成 v2 迁移').toBe(2);
 
     // 再「启动一次服务」：import novel-db.js 等价于 API 进程启动时的
-    // initDb + migrate。若迁移不幂等（例如重复 ALTER TABLE 未容错），
+    // initDb + migrate。若迁移不幂等（例如重复建索引未容错），
     // 这里会直接抛错、退出码非 0。
     const restart = spawnSync(
       process.execPath,
@@ -282,7 +283,7 @@ test.describe('API 契约 · 迁移框架（T004）', () => {
     );
     expect(restart.status, `第二次启动不应失败：${restart.stderr || ''}`).toBe(0);
 
-    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(1);
+    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(2);
 
     // 幂等不等于可用：确认在线服务仍然正常响应。
     const res = await request.get(`${API_BASE}/api/novel/bootstrap`);

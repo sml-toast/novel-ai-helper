@@ -422,6 +422,39 @@ function getBootstrapData() {
   };
 }
 
+/**
+ * 当前项目 id（单用户场景下 bootstrap 固定取 id 最小的项目，F079 将改为可切换）。
+ *
+ * 性能关键路径：handle() 的每个请求都需要 projectId。此前实现是先无条件拉整个
+ * getBootstrapData()（全部章节正文 + 图谱构建）再取其中的 id——200 章 × 3KB 实测
+ * 让每个轻量请求固定多付约 5ms，且成本随章节数线性增长。这里只做一次主键查询。
+ */
+function getCurrentProjectId() {
+  const row = get('SELECT id FROM projects ORDER BY id LIMIT 1');
+  return row ? row.id : null;
+}
+
+/** 章节计数：create-chapter 的默认标题用，避免为取个数为拉全量章节。 */
+function countChapters(projectId) {
+  return get('SELECT COUNT(*) AS count FROM chapters WHERE project_id = ?', [projectId]).count;
+}
+
+/**
+ * AI 任务上下文：/ai 分支专用。
+ * 此前直接复用 getBootstrapData()，一次 AI 调用会连带拉全部章节正文并构建图谱——
+ * 两者都不进 prompt（buildPrompt 只用项目设定与当前章）。只取真正需要的部分。
+ */
+function getAiContextData(projectId) {
+  return {
+    project: sanitizeProject(get('SELECT * FROM projects WHERE id = ?', [projectId])),
+    relations: all('SELECT * FROM character_relations WHERE project_id = ? ORDER BY id', [projectId]),
+    knowledge: {
+      global: all("SELECT * FROM knowledge_entries WHERE scope = 'global' ORDER BY id"),
+      project: all("SELECT * FROM knowledge_entries WHERE scope = 'project' AND project_id = ? ORDER BY id", [projectId])
+    }
+  };
+}
+
 function createProject({ title, genre, worldView, targetPlatform, writingStyle }) {
   const timestamp = now();
   const user = get('SELECT id FROM users WHERE username = ?', ['local-author']);
@@ -1300,12 +1333,20 @@ function buildGraph(projectId, graphType = 'all') {
   timeline.forEach(row => nodes.push({ id: `time-${row.title}`, label: row.title, type: 'timeline', group: 'timeline', detail: `${row.event_time}｜${row.description}` }));
   scenes.forEach(row => nodes.push({ id: `scene-${row.name}`, label: row.name, type: 'scene', group: 'scene', detail: `${row.mood}｜${row.description}` }));
   worldSettings.forEach(row => nodes.push({ id: `world-${row.title}`, label: row.title, type: 'world', group: 'world', detail: `${row.category}｜${row.content}` }));
-  // Relations last — they may add characters not in the characters table, but won't overwrite character details
+  // Relations last — they may add characters not in the characters table, but won't overwrite character details.
+  // 用 Set 判重：此前对每条关系都线性扫描 nodes（O(关系数×节点数)），节点一多就是白费的开销
+  const nodeIds = new Set(nodes.map(node => node.id));
   relationRows.forEach(row => {
     const sourceId = `char-${row.source_name}`;
     const targetId = `char-${row.target_name}`;
-    if (!nodes.some(n => n.id === sourceId)) nodes.push({ id: sourceId, label: row.source_name, type: 'character', group: 'character', detail: row.relation_type });
-    if (!nodes.some(n => n.id === targetId)) nodes.push({ id: targetId, label: row.target_name, type: 'character', group: 'character', detail: row.relation_type });
+    if (!nodeIds.has(sourceId)) {
+      nodes.push({ id: sourceId, label: row.source_name, type: 'character', group: 'character', detail: row.relation_type });
+      nodeIds.add(sourceId);
+    }
+    if (!nodeIds.has(targetId)) {
+      nodes.push({ id: targetId, label: row.target_name, type: 'character', group: 'character', detail: row.relation_type });
+      nodeIds.add(targetId);
+    }
   });
   const uniqueNodes = Array.from(new Map(nodes.map(node => [node.id, node])).values());
   const filteredNodes = graphType === 'all' ? uniqueNodes : uniqueNodes.filter(node => node.group === graphType || node.type === 'core');
@@ -1332,4 +1373,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getDashboardStats, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };

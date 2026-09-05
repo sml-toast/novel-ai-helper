@@ -88,7 +88,7 @@ npm run test:report   # 打开上次 HTML 报告（test-results/playwright-repor
 | 10 | 草稿语义 | 连打 10 次 `/draft` **版本行数不变**但正文已更新（F076 核心） |
 | 11 | 版本语义 | `/save` 一次新增恰好 1 个 `manual` 版本 |
 | 12 | 创建章节 | 初始化 1 个 `auto` 版本 |
-| 13 | 迁移幂等 | 重复启动服务后 `user_version` 稳定为 1 |
+| 13 | 迁移幂等 | 重复启动服务后 `user_version` 稳定为 2（v1 密钥列+版本语义；v2 外键性能索引） |
 | 14 | 导出完整性（F078） | 19 个集合齐全 + formatVersion/schemaVersion；种子数据在场；**不含密钥材料** |
 | 15 | 导入校验 | 数组载荷 / 缺 project / 未来格式版本 → 400，服务保持健康 |
 | 16 | 导入为新项目 | ID 全量重映射、`?projectId=` 可再导出、章节/版本/角色/关系/发布任务内容逐项一致、global 知识不重复插入 |

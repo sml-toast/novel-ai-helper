@@ -73,8 +73,8 @@ graph TB
 | `novel-ai.html` | 494 | 工作台页面结构 | 注入 `window.NOVEL_API_PORT`；69 个 `data-action` 触发点 |
 | `novel-ai.js` | 1805 | 前端全部逻辑（单文件 ES module） | 事件委托路由、F076 防丢稿状态机、日志系统、`escapeHtml` 统一转义、F078 导入交互 |
 | `novel-ai.css` | 839 | 样式与主题 | CSS 变量、明暗主题、响应式侧栏 |
-| `server/novel-api.js` | 451 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；`readJson` 2MB 上限；413/500 统一兜底 |
-| `server/novel-db.js` | 1335 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌 |
+| `server/novel-api.js` | 457 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；`readJson` 2MB 上限；413/400/500 统一兜底 |
+| `server/novel-db.js` | 1376 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌 |
 | `server/novel-auth.js` | 72 | 鉴权中间件 | Origin 白名单、写方法集合、`MAX_BODY_BYTES = 2MB` |
 | `server/novel-secret.js` | 179 | 密钥加密 | 主密钥管理、scrypt 派生缓存、AES-256-GCM、掩码 |
 | `server/novel-migrate.js` | 87 | schema 迁移框架 | `MIGRATIONS` 数组（当前 v1）、单事务、失败即启动失败 |
@@ -165,9 +165,15 @@ stateDiagram-v2
 OPTIONS 分流（预检：白名单 204 / 非法 403）
   → authMiddleware          # Origin 白名单；无 Origin（curl/测试）放行
   → res.locals.corsOrigin   # 之后所有 send() 按它回显 ACAO + Vary: Origin，绝不返回 *
-  → 路由分支（50 个 if）
-  → catch：PAYLOAD_TOO_LARGE → 413；其余 → 500
+  → getCurrentProjectId()   # 一次主键查询取 projectId；绝不在此时拉全量 bootstrap
+  → 路由分支（50+ 个 if，/bootstrap、/chapters(POST)、/ai 各自按需取数）
+  → catch：PAYLOAD_TOO_LARGE → 413；ImportPayloadError → 400；其余 → 500
 ```
+
+> **性能约束（实测 200 章 × 3KB 基准）**：`getBootstrapData()`（全部章节正文 + 图谱构建）只在
+> `/bootstrap` 分支执行。此前它挂在 `handle()` 入口无条件执行，每个轻量请求固定多付 ~5ms
+> 且随章节数线性增长；惰性化后轻量端点 0.3ms（约 17x），造数 200 章 731ms → 211ms。
+> 新增端点时同样**只取该分支需要的数据**，不要为图方便顺手拉 bootstrap。
 
 ### 5.2 端点清单（按域分组）
 
@@ -249,7 +255,9 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 - `MIGRATIONS` 数组，version 严格递增，**永不修改已发布的迁移**；新需求一律追加新条目。
 - 每个迁移单事务：`up()` 成功 → `PRAGMA user_version = N` → COMMIT；失败 → ROLLBACK 并**抛异常终止启动**。
 - `safeExec` 容错「duplicate column / already exists」保证幂等；其余错误原样上抛。
-- 当前已应用：**v1**（F075 密钥列 `api_key_cipher/salt` + F086 版本语义列 `kind/name`）。
+- 当前已应用：**v1**（F075 密钥列 `api_key_cipher/salt` + F086 版本语义列 `kind/name`）、
+  **v2**（17 个外键性能索引——SQLite 的 FOREIGN KEY 不自动建索引，而本项目几乎全部查询按
+  project_id/chapter_id 过滤）。
 - 契约测试 13 用例覆盖「重复启动 user_version 稳定不变」。
 
 ### 6.4 版本语义（F076 × F086 合并设计的落地）
