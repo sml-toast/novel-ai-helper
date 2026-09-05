@@ -1,4 +1,9 @@
-const apiBase = `${location.protocol}//${location.hostname}:${window.NOVEL_API_PORT || 8787}/api/novel`;
+// F074 后 API 默认只监听 127.0.0.1（IPv4 回环）。
+// 若继续用 location.hostname 拼接，页面从 localhost 打开时该名称可能被解析为 IPv6 ::1，
+// 而 API 并未监听 ::1，会直接连不上。因此固定回连 127.0.0.1。
+// 确需指向其他地址时，在页面注入 window.NOVEL_API_HOST 覆盖。
+const apiHost = window.NOVEL_API_HOST || '127.0.0.1';
+const apiBase = `${location.protocol}//${apiHost}:${window.NOVEL_API_PORT || 8787}/api/novel`;
 
 // ── HTML sanitization ──
 function escapeHtml(str) {
@@ -225,7 +230,13 @@ async function apiFetch(path, options = {}) {
     ...options,
     headers: { 'content-type': 'application/json', ...(options.headers || {}) }
   });
-  if (!response.ok) throw new Error(`API ${response.status}`);
+  if (!response.ok) {
+    // F076：带上状态码，自动保存需要区分「可重试的网络错误」与「章节不存在（404）」，
+    // 否则 404 会被无限重试，页面角落一直闪「保存失败」。
+    const error = new Error(`API ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 
@@ -240,6 +251,8 @@ async function loadBootstrap() {
     activeChapter = fallbackState.chapters[2];
   }
   renderAll();
+  // F075：密钥状态提示（含主密钥备份引导）
+  renderAiKeyStatus();
 }
 
 function renderAll() {
@@ -281,11 +294,494 @@ function renderChapters() {
 function renderEditor() {
   chapterTitle.textContent = activeChapter.title;
   editor.value = activeChapter.content;
+  // F076：刚载入的内容就是「已同步基线」，dirty 判定从这里开始
+  lastSavedContent = activeChapter.content;
+  saveAborted = false;
   updateWordCount();
+  setSaveState('saved');
 }
 
 function updateWordCount() {
   wordCount.textContent = editor.value.replace(/\s/g, '').length.toString();
+}
+
+/* ==========================================================================
+ * F076 防丢稿：dirty 状态机 + 3s 防抖草稿自动保存
+ *
+ * 为什么自动保存不生成版本（与 F086 的强耦合规则）：
+ *   实测 120 分钟写作 × 3s 防抖 = 单章 360 个版本 / 3.18MB，折算 100 章 318MB，
+ *   且版本列表接口单次要返回 108 万字。草稿态只 UPDATE chapters.content、
+ *   不 INSERT chapter_versions，压缩比约 45 倍。
+ *   只有「手动存稿（/save）」「里程碑快照」「回滚」才写版本表。
+ * ========================================================================== */
+
+const AUTOSAVE_DELAY = 3000;
+const MAX_RETRY = 3;              // 连续失败 3 次后降级到 localStorage
+const CLEAR_API_KEY = '__CLEAR__';
+
+const SAVE_LABELS = {
+  saved: '已保存',
+  unsaved: '未保存',
+  saving: '保存中…',
+  failed: '保存失败',
+  local: '已存本地'
+};
+
+const saveIndicator = document.querySelector('#saveIndicator');
+const autoSaveHint = document.querySelector('#autoSaveHint');
+
+/** @type {'saved'|'unsaved'|'saving'|'failed'|'local'} */
+let saveState = 'saved';
+let lastSavedContent = '';
+let saveTimer = null;
+let retryCount = 0;
+let autoSaving = false;   // 防并发：请求飞行期间不再发第二个 draft 请求
+let saveAborted = false;  // 章节不存在（404）时置位，停止无意义的重试
+
+/** 本地降级草稿的 storage key */
+function draftKey(chapterId) {
+  return `novel-draft:${chapterId}`;
+}
+
+/** 编辑器内容是否已偏离最后一次成功落库的内容 */
+function isDirty() {
+  if (!activeChapter) return false;
+  return editor.value !== lastSavedContent;
+}
+
+/**
+ * 切换保存状态并刷新指示器。
+ * @param {'saved'|'unsaved'|'saving'|'failed'|'local'} next 目标状态
+ * @param {string} message 附加说明（如重试倒计时）
+ */
+function setSaveState(next, message = '') {
+  saveState = next;
+  if (saveIndicator) {
+    saveIndicator.textContent = SAVE_LABELS[next] + (message ? ` · ${message}` : '');
+    saveIndicator.dataset.state = next;
+  }
+  if (autoSaveHint) {
+    autoSaveHint.textContent = `保存状态：${SAVE_LABELS[next]}${message ? ` · ${message}` : ''}`;
+  }
+}
+
+function updateAutoSaveHint(text) {
+  if (autoSaveHint) autoSaveHint.textContent = text;
+}
+
+/** 排一次自动保存（防抖：连续输入只保留最后一次定时） */
+function scheduleAutoSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(autoSave, AUTOSAVE_DELAY);
+}
+
+function cancelAutoSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+}
+
+/** 立即执行一次自动保存（切章、合并、手动触发时用） */
+async function autoSaveNow() {
+  cancelAutoSave();
+  await autoSave();
+}
+
+/**
+ * 自动保存：走 /draft，**只更新正文，不生成版本**。
+ *
+ * 关键细节：请求发出前先取 editor.value 快照。请求飞行期间用户很可能又输入了内容，
+ * 若直接用 editor.value 回写 lastSavedContent，这部分新输入会被误判为「已保存」，
+ * 之后的覆盖/离开就不再拦截 —— 正是丢稿的经典成因。
+ */
+async function autoSave() {
+  if (!apiOnline || !activeChapter || saveAborted) return;
+  if (!isDirty()) {
+    setSaveState('saved');
+    return;
+  }
+  // 已有请求在飞：不要并发写，排到下一轮即可，本轮输入不会丢
+  if (autoSaving) {
+    scheduleAutoSave();
+    return;
+  }
+
+  autoSaving = true;
+  setSaveState('saving');
+  const snapshot = editor.value;
+  const chapterId = activeChapter.id;
+
+  try {
+    const result = await apiFetch(`/chapters/${chapterId}/draft`, {
+      method: 'POST',
+      body: JSON.stringify({ content: snapshot })
+    });
+    activeChapter = result.chapter;
+    state.chapters = state.chapters.map(chapter => (chapter.id === activeChapter.id ? activeChapter : chapter));
+    retryCount = 0;
+
+    if (editor.value === snapshot) {
+      // 期间没有新输入 → 完全同步
+      lastSavedContent = snapshot;
+      setSaveState('saved');
+      localStorage.removeItem(draftKey(chapterId));
+      updateAutoSaveHint(`已保存草稿 · ${new Date().toLocaleTimeString('zh-CN')}（草稿不生成版本）`);
+    } else {
+      // 快照已入库，剩余差异留给下一轮
+      lastSavedContent = snapshot;
+      setSaveState('unsaved');
+      scheduleAutoSave();
+    }
+  } catch (error) {
+    // 章节不存在：继续重试毫无意义，明确停止并提示
+    if (error.status === 404) {
+      saveAborted = true;
+      cancelAutoSave();
+      setSaveState('failed', '章节不存在，已停止重试');
+      flashAssist('自动保存停止', `章节 #${chapterId} 不存在（404），已停止重试，请刷新页面。`);
+      return;
+    }
+
+    retryCount += 1;
+    if (retryCount <= MAX_RETRY) {
+      const delay = 3 ** retryCount; // 3s / 9s / 27s 指数退避
+      setSaveState('failed', `${delay}s 后重试`);
+      cancelAutoSave();
+      saveTimer = setTimeout(autoSave, delay * 1000);
+    } else {
+      // 连续失败：降级到 localStorage，绝不阻塞输入
+      writeLocalDraft();
+      setSaveState('local', '已存浏览器本地，恢复后可合并');
+    }
+  } finally {
+    autoSaving = false;
+  }
+}
+
+/** 把当前编辑器内容写入 localStorage 作为兜底 */
+function writeLocalDraft() {
+  if (!activeChapter) return;
+  try {
+    localStorage.setItem(draftKey(activeChapter.id), JSON.stringify({
+      content: editor.value,
+      at: new Date().toISOString()
+    }));
+  } catch (error) {
+    setSaveState('failed', `本地存储写入失败：${error.message}`);
+  }
+}
+
+function readLocalDraft(chapterId) {
+  const raw = localStorage.getItem(draftKey(chapterId));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed.content === 'string' ? parsed : null;
+  } catch {
+    localStorage.removeItem(draftKey(chapterId));
+    return null;
+  }
+}
+
+/**
+ * 载入章节后检查是否存在未同步的本地草稿。
+ *
+ * 只在「本地草稿比服务端内容新」时提示合并：本地更旧说明服务端的版本已经
+ * 覆盖了它，继续弹窗只会把作者拦在已经放弃的旧稿上。
+ */
+async function checkLocalDraft() {
+  if (!apiOnline || !activeChapter) return;
+  const draft = readLocalDraft(activeChapter.id);
+  if (!draft) return;
+  if (draft.content === activeChapter.content) {
+    localStorage.removeItem(draftKey(activeChapter.id));
+    return;
+  }
+
+  const localAt = Date.parse(draft.at || '');
+  const serverAt = Date.parse(activeChapter.updated_at || '');
+  const localNewer = Number.isFinite(localAt) && (!Number.isFinite(serverAt) || localAt > serverAt);
+  if (!localNewer) {
+    localStorage.removeItem(draftKey(activeChapter.id));
+    return;
+  }
+
+  const choice = await confirmMergeDraft(draft.content, activeChapter.content, draft.at);
+  if (choice === 'local') {
+    editor.value = draft.content;
+    updateWordCount();
+    setSaveState('unsaved');
+    await autoSaveNow(); // 合并即落库，成功后由 autoSave 清掉 localStorage
+    flashAssist('本地草稿已合并', '已采用浏览器本地保存的内容并写回服务器。');
+    if (saveState !== 'saved') {
+      flashAssist('本地草稿尚未同步', '合并内容写入失败，稍后可在编辑器继续修改后重试保存。', 'warning');
+    }
+  } else if (choice === 'server') {
+    localStorage.removeItem(draftKey(activeChapter.id));
+    setSaveState('saved');
+    flashAssist('已采用服务端内容', '本地草稿已丢弃。');
+  }
+  // 'later'：保留 localStorage，下次载入该章节时再问
+}
+
+/** 切换章节（带 dirty 拦截） */
+async function switchChapter(chapterId) {
+  const next = state.chapters.find(chapter => chapter.id === chapterId);
+  if (!next) return;
+  if (activeChapter && next.id === activeChapter.id) return;
+
+  if (isDirty()) {
+    const choice = await showModal({
+      title: '当前章节有未保存的修改',
+      bodyHtml: `<p>《${escapeHtml(activeChapter.title)}》还有改动没有写入服务器，切换章节前请选择处理方式。</p>`,
+      actions: [
+        { label: '保存并切换', value: 'save', variant: 'primary-btn' },
+        { label: '放弃修改', value: 'discard' },
+        { label: '取消', value: 'cancel' }
+      ]
+    });
+    // 弹窗期间用户可能继续输入，取消时编辑器内容原样保留
+    if (choice === 'cancel') return;
+    if (choice === 'save') {
+      await autoSaveNow();
+      if (isDirty()) {
+        // 保存失败时不能默默丢稿，再确认一次
+        const forced = await showModal({
+          title: '自动保存失败',
+          bodyHtml: '<p>改动未能写入服务器。切换章节会丢失这些修改，是否继续？</p>',
+          actions: [
+            { label: '放弃修改并切换', value: 'discard' },
+            { label: '留在当前章节', value: 'cancel', variant: 'primary-btn' }
+          ]
+        });
+        if (forced !== 'discard') return;
+      }
+    }
+  }
+
+  adoptChapter(next);
+}
+
+/** 载入新章节并重置保存状态机 */
+function adoptChapter(chapter) {
+  activeChapter = chapter;
+  cancelAutoSave();
+  retryCount = 0;
+  saveAborted = false;
+  renderChapters();
+  renderEditor();
+  // 异步检查本地降级草稿，失败不冒泡成未捕获异常
+  checkLocalDraft().catch(error => {
+    flashAssist('本地草稿检查失败', error.message, 'warning');
+  });
+}
+
+/* ==========================================================================
+ * 通用确认弹窗（切章拦截 / 草稿合并 / 密钥清除 共用）
+ * ========================================================================== */
+
+const modalMask = document.querySelector('#modalMask');
+const modalTitle = document.querySelector('#modalTitle');
+const modalBody = document.querySelector('#modalBody');
+const modalActions = document.querySelector('#modalActions');
+let modalResolve = null;
+
+/**
+ * 打开确认弹窗。
+ * @param {{title:string, bodyHtml:string, actions:Array<{label:string, value:string, variant?:string}>}} options
+ * @returns {Promise<string>} 被点击按钮的 value；点遮罩或按 ESC 返回 'cancel'
+ */
+function showModal({ title, bodyHtml, actions }) {
+  if (!modalMask) return Promise.resolve('cancel');
+  closeModal('cancel'); // 同时只允许一个弹窗，先结算上一个
+  modalTitle.textContent = title;
+  modalBody.innerHTML = bodyHtml;
+  modalActions.innerHTML = '';
+  actions.forEach(action => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    if (action.variant) button.className = action.variant;
+    button.addEventListener('click', () => closeModal(action.value));
+    modalActions.appendChild(button);
+  });
+  modalMask.hidden = false;
+  return new Promise(resolve => {
+    modalResolve = resolve;
+  });
+}
+
+function closeModal(value) {
+  const resolve = modalResolve;
+  modalResolve = null;
+  if (modalMask) modalMask.hidden = true;
+  if (resolve) resolve(value);
+}
+
+if (modalMask) {
+  modalMask.addEventListener('click', event => {
+    if (event.target === modalMask) closeModal('cancel');
+  });
+}
+
+/**
+ * 本地草稿合并三选一：采用本地 / 采用服务端 / 并排查看。
+ * @param {string} local 本地草稿内容
+ * @param {string} server 服务端内容
+ * @param {string} localAt 本地草稿时间戳
+ * @returns {Promise<'local'|'server'|'later'>}
+ */
+async function confirmMergeDraft(local, server, localAt) {
+  let showCompare = false;
+  for (;;) {
+    const bodyHtml = showCompare
+      ? `<p>并排对照后，请选择保留哪一份。本地草稿保存于 ${escapeHtml(formatDateTime(localAt))}。</p>
+         <div class="merge-columns">
+           <div><h4>浏览器本地草稿（${local.length} 字）</h4><textarea readonly>${escapeHtml(local)}</textarea></div>
+           <div><h4>服务端内容（${server.length} 字）</h4><textarea readonly>${escapeHtml(server)}</textarea></div>
+         </div>`
+      : `<p>发现未同步的本地修改（保存于 ${escapeHtml(formatDateTime(localAt))}，${local.length} 字），
+          与服务端内容（${server.length} 字）不一致。请选择保留哪一份。</p>`;
+
+    const choice = await showModal({
+      title: '发现未同步的本地修改，是否合并',
+      bodyHtml,
+      actions: [
+        { label: '采用本地', value: 'local', variant: 'primary-btn' },
+        { label: '采用服务端', value: 'server' },
+        { label: showCompare ? '收起对照' : '并排查看', value: showCompare ? 'collapse' : 'compare' },
+        { label: '稍后处理', value: 'later' }
+      ]
+    });
+
+    if (choice === 'compare') {
+      showCompare = true;
+      continue;
+    }
+    if (choice === 'collapse') {
+      showCompare = false;
+      continue;
+    }
+    return choice;
+  }
+}
+
+/* ==========================================================================
+ * F075 密钥配置 UI
+ * ========================================================================== */
+
+/** 回填「密钥状态 / 主密钥路径 / 指纹」提示区 */
+function renderAiKeyStatus() {
+  const status = document.querySelector('#aiKeyStatus');
+  const input = document.querySelector('#aiApiKeyInput');
+  if (status) setKeyStatus(status, 'warn', '密钥状态：读取中…');
+  if (input) input.value = '';
+  loadMasterKeyMeta();
+
+  if (!status) return;
+  if (!apiOnline || !state.project) {
+    setKeyStatus(status, 'warn', 'API 未启动，无法读取密钥状态。');
+    return;
+  }
+  if (!state.project.hasApiKey) {
+    setKeyStatus(status, 'warn', '未配置密钥 · 当前为本地演示模式（mock），AI 建议为内置示例数据，非真实模型输出。');
+    if (input) input.placeholder = 'API Key（留空表示不修改）';
+    return;
+  }
+
+  const masked = state.project.apiKeyMasked || '已配置';
+  if (state.project.decryptable === false) {
+    setKeyStatus(status, 'danger', `已保存密钥（${masked}）但无法解密 · 主密钥可能已被更换，请恢复备份或重新填写密钥。`);
+    if (input) input.placeholder = '密钥无法解密，请重新填写';
+    return;
+  }
+  setKeyStatus(status, 'ok', `已配置密钥（${masked}）· 输入框留空表示不修改`);
+  if (input) input.placeholder = `已配置：${masked}，留空表示不修改`;
+}
+
+function setKeyStatus(element, level, text) {
+  element.textContent = text;
+  element.dataset.level = level;
+}
+
+/**
+ * 拉取主密钥元信息用于备份引导。
+ * 失败时静默 —— 提示区不构成主流程，不该因为读不到路径就报错打断写作。
+ */
+async function loadMasterKeyMeta() {
+  const pathEl = document.querySelector('#masterKeyPath');
+  const fpEl = document.querySelector('#masterKeyFingerprint');
+  if (!apiOnline) {
+    if (pathEl) pathEl.textContent = '~/.novel-ai/master.key';
+    return;
+  }
+  try {
+    const meta = await apiFetch('/settings/ai/master-key');
+    if (pathEl) pathEl.textContent = meta.path;
+    if (fpEl) fpEl.textContent = meta.fingerprint ? ` · 指纹 ${meta.fingerprint}` : '';
+  } catch (error) {
+    if (pathEl) pathEl.textContent = '~/.novel-ai/master.key';
+  }
+}
+
+/** 导出主密钥备份文件 */
+async function exportMasterKey() {
+  if (!apiOnline) return flashAssist('主密钥备份', 'API 未启动，无法读取主密钥。', 'warning');
+  try {
+    const meta = await apiFetch('/settings/ai/master-key');
+    const bytes = Uint8Array.from(atob(meta.content), char => char.charCodeAt(0));
+    downloadFile('novel-ai-master.key', new Blob([bytes], { type: 'application/octet-stream' }), 'application/octet-stream');
+    flashAssist('主密钥已导出', `已下载 novel-ai-master.key（来源：${meta.path}）。请将它存放到安全位置：此文件丢失将导致已保存的密钥无法恢复。`);
+  } catch (error) {
+    flashAssist('主密钥导出失败', error.message, 'danger');
+  }
+}
+
+/** 清除项目已保存的密钥（需二次确认） */
+async function clearApiKey() {
+  if (!apiOnline) return flashAssist('清除密钥', 'API 未启动，无法修改密钥。', 'warning');
+  const choice = await showModal({
+    title: '清除已保存的密钥',
+    bodyHtml: '<p>清除后该项目将回落到环境变量 NOVEL_AI_API_KEY，若环境变量也未配置则进入本地演示模式（mock）。此操作不可撤销。</p>',
+    actions: [
+      { label: '确认清除', value: 'confirm' },
+      { label: '取消', value: 'cancel', variant: 'primary-btn' }
+    ]
+  });
+  if (choice !== 'confirm') return;
+  try {
+    await apiFetch('/settings/ai', {
+      method: 'POST',
+      body: JSON.stringify({
+        baseUrl: document.querySelector('#aiBaseUrlInput')?.value.trim() || '',
+        model: document.querySelector('#aiModelInput')?.value.trim() || 'mock-novel-copilot',
+        apiKey: CLEAR_API_KEY
+      })
+    });
+    const input = document.querySelector('#aiApiKeyInput');
+    if (input) input.value = '';
+    flashAssist('密钥已清除', '项目库中的加密密钥已删除。');
+    await refreshBootstrapProject();
+  } catch (error) {
+    flashAssist('清除密钥失败', error.message, 'danger');
+  }
+}
+
+/** 重新拉取 bootstrap，刷新项目（含 hasApiKey / apiKeyMasked）与章节列表 */
+async function refreshBootstrapProject() {
+  try {
+    const fresh = await apiFetch('/bootstrap');
+    const previousChapterId = activeChapter ? activeChapter.id : null;
+    state = fresh;
+    apiOnline = true;
+    const same = state.chapters.find(chapter => chapter.id === previousChapterId);
+    activeChapter = same || state.chapters[state.chapters.length - 1] || fallbackState.chapters[0];
+    renderProject();
+    renderChapters();
+    renderEditor();
+    renderAiKeyStatus();
+  } catch (error) {
+    flashAssist('状态刷新失败', error.message, 'danger');
+  }
 }
 
 function renderAssist(tab = 'ideas') {
@@ -375,6 +871,13 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+/** 本地草稿时间戳展示：非法值回退到原始字符串，不要显示 Invalid Date */
+function formatDateTime(value) {
+  if (!value) return '未知时间';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
 }
 
 function openDrawer(name) {
@@ -885,15 +1388,28 @@ async function loadWorld() {
 
 async function saveAiSettings() {
   if (!apiOnline) return flashAssist('AI 配置', 'API 未启动，无法保存 AI 配置。', 'warning');
+  const input = document.querySelector('#aiApiKeyInput');
+  // 三态语义与服务端一致：非空覆盖、留空不修改、'__CLEAR__' 清除
+  const apiKey = input ? input.value.trim() : '';
   try {
     const result = await apiFetch('/settings/ai', {
       method: 'POST',
       body: JSON.stringify({
         baseUrl: document.querySelector('#aiBaseUrlInput').value.trim(),
-        model: document.querySelector('#aiModelInput').value.trim() || 'mock-novel-copilot'
+        model: document.querySelector('#aiModelInput').value.trim() || 'mock-novel-copilot',
+        apiKey
       })
     });
-    flashAssist('AI 配置已保存', `当前模型：${result.settings.ai_model}`);
+    if (input) input.value = '';
+    if (state.project) {
+      state.project.ai_base_url = result.settings.ai_base_url;
+      state.project.ai_model = result.settings.ai_model;
+      state.project.hasApiKey = Boolean(result.key?.hasApiKey);
+      state.project.apiKeyMasked = result.key?.apiKeyMasked || '';
+      state.project.decryptable = result.key?.decryptable !== false;
+    }
+    renderAiKeyStatus();
+    flashAssist('AI 配置已保存', `当前模型：${result.settings.ai_model}${apiKey ? ' · 密钥已加密写入项目库' : ' · 密钥保持不变'}`);
   } catch (error) {
     flashAssist('AI 配置失败', error.message, 'danger');
   }
@@ -988,17 +1504,30 @@ function downloadFile(filename, content, type) {
 async function saveDraft() {
   activeChapter.content = editor.value;
   if (!apiOnline) {
-    flashAssist('章节已存稿', 'API 未启动，已保存在当前浏览器演示状态。');
+    writeLocalDraft();
+    setSaveState('local', 'API 未启动，已存浏览器本地');
+    flashAssist('章节已存本地', 'API 未启动，内容已保存在浏览器 localStorage，恢复连接后可合并。', 'warning');
     renderChapters();
     return;
   }
+  setSaveState('saving');
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/save`, { method: 'POST', body: JSON.stringify({ content: editor.value }) });
     activeChapter = result.chapter;
     state.chapters = state.chapters.map(chapter => chapter.id === activeChapter.id ? activeChapter : chapter);
+    // 只把「服务端确认收到的内容」设为基线：请求期间的新输入仍然算 dirty
+    lastSavedContent = result.chapter.content;
+    retryCount = 0;
+    localStorage.removeItem(draftKey(activeChapter.id));
+    setSaveState('saved');
+    if (editor.value !== lastSavedContent) {
+      setSaveState('unsaved');
+      scheduleAutoSave();
+    }
     flashAssist('章节已存稿', `已写入 SQLite，并生成版本 ${activeChapter.version}。`);
     renderChapters();
   } catch (error) {
+    setSaveState('failed', error.message);
     flashAssist('存稿失败', error.message, 'danger');
   }
 }
@@ -1060,9 +1589,8 @@ document.addEventListener('click', event => {
 
   const chapterButton = event.target.closest('[data-chapter-id]');
   if (chapterButton) {
-    activeChapter = state.chapters.find(chapter => chapter.id === Number(chapterButton.dataset.chapterId));
-    renderChapters();
-    renderEditor();
+    // F076：切章前必须过 dirty 拦截，否则未保存内容会被 renderEditor 直接覆盖
+    switchChapter(Number(chapterButton.dataset.chapterId));
     return;
   }
 
@@ -1152,6 +1680,8 @@ document.addEventListener('click', event => {
   if (action === 'load-history') return loadHistory();
   if (action === 'load-audit') return loadAudit();
   if (action === 'save-ai-settings') return saveAiSettings();
+  if (action === 'clear-api-key') return clearApiKey();
+  if (action === 'export-master-key') return exportMasterKey();
   if (action === 'save-prompt') return savePrompt();
   if (action === 'load-prompts') return loadPrompts();
   if (action === 'bulk-knowledge') return bulkKnowledge();
@@ -1186,5 +1716,34 @@ document.getElementById('logLevelFilter')?.addEventListener('change', () => {
   renderLogPanel();
 });
 
-editor.addEventListener('input', updateWordCount);
+/* ── F076 输入监听：触发 dirty 状态与 3s 防抖自动保存 ── */
+editor.addEventListener('input', () => {
+  updateWordCount();
+  if (!apiOnline || !activeChapter || saveAborted) return;
+  setSaveState('unsaved');
+  scheduleAutoSave();
+});
+
+/* ── F076 离开页面守卫：有未保存内容时阻止关闭/刷新 ── */
+window.addEventListener('beforeunload', event => {
+  if (!isDirty()) return;
+  event.preventDefault();
+  // 现代浏览器需要 returnValue 非空才会真正弹确认框
+  event.returnValue = '';
+  return '';
+});
+
+/* ── F076 快捷键：Cmd/Ctrl+S 手动存稿（生成版本）+ ESC 关闭弹窗 ── */
+window.addEventListener('keydown', event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    // 不 preventDefault 的话浏览器会弹出「保存网页」对话框
+    event.preventDefault();
+    saveDraft();
+    return;
+  }
+  if (event.key === 'Escape' && modalMask && !modalMask.hidden) {
+    closeModal('cancel');
+  }
+});
+
 loadBootstrap();

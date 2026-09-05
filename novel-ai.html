@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NovelForge AI · 小说 AI 助手</title>
+  <title>Novel AI · 小说 AI 助手</title>
   <meta name="description" content="小说 AI 助手工作台：章节写作、AI 同步辅助、知识库、人物关系、情节校验与定时推送。" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./novel-ai.css" />
+  <script>window.NOVEL_API_PORT = 8787;</script>
   <script type="module" src="./novel-ai.js"></script>
 </head>
 <body>
@@ -17,7 +18,7 @@
       <a class="brand" href="./index.html" aria-label="返回博客首页">
         <span class="brand-mark">NF</span>
         <span>
-          <strong>NovelForge AI</strong>
+          <strong>Novel AI</strong>
           <small>小说创作智能工作台</small>
         </span>
       </a>
@@ -104,6 +105,8 @@
             <div>
               <span class="eyebrow">Chapter Editor</span>
               <h2 id="chapterTitle">第 12 章 · 钟楼下的背叛</h2>
+              <!-- F076 五态保存指示器：saved / unsaved / saving / failed / local -->
+              <span class="save-indicator" id="saveIndicator" data-state="saved">已保存</span>
             </div>
           <div class="toolbar-actions">
               <button type="button" data-action="framework">框架提炼</button>
@@ -289,8 +292,21 @@
           <div class="form-grid">
             <input id="aiBaseUrlInput" type="text" placeholder="OpenAI-compatible baseURL（可留空使用 mock）" />
             <input id="aiModelInput" type="text" placeholder="模型名称" value="mock-novel-copilot" />
+            <input id="aiApiKeyInput" type="password" placeholder="API Key（留空表示不修改）" autocomplete="new-password" spellcheck="false" />
             <input id="promptTaskInput" type="text" placeholder="任务类型，如 polish" value="polish" />
             <input id="promptTitleInput" type="text" placeholder="模板标题" value="拟人化润色模板" />
+          </div>
+          <div class="secret-guide">
+            <p class="secret-status" id="aiKeyStatus">密钥状态：读取中…</p>
+            <div class="toolbar-actions">
+              <button type="button" data-action="clear-api-key">清除已保存密钥</button>
+              <button type="button" data-action="export-master-key">导出主密钥备份</button>
+            </div>
+            <p class="secret-tip">
+              主密钥文件：<code id="masterKeyPath">~/.novel-ai/master.key</code><span id="masterKeyFingerprint"></span><br />
+              项目里保存的 API Key 用该主密钥加密（AES-256-GCM）。
+              <strong>此文件丢失将导致已保存的密钥永久无法恢复</strong>，请务必自行备份。
+            </p>
           </div>
           <textarea class="config-textarea" id="promptTemplateInput">保持作者原意，把静态描写改为具有动作意志的拟人化表达，避免过度华丽。</textarea>
           <div class="toolbar-actions">
@@ -464,6 +480,15 @@
       </div>
       <div id="logList" style="max-height: 500px; overflow-y: auto;"></div>
     </section>
+
+    <!-- F076 通用确认弹窗：切章拦截 / 本地草稿合并都复用它 -->
+    <div class="modal-mask" id="modalMask" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <h3 id="modalTitle">确认</h3>
+        <div id="modalBody"></div>
+        <div class="toolbar-actions" id="modalActions"></div>
+      </div>
+    </div>
 
 </body>
 </html>

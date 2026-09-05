@@ -1,17 +1,37 @@
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { migrate } from './novel-migrate.js';
+import { decryptSecret, encryptSecret, maskSecret } from './novel-secret.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbDir = join(__dirname, '..', '.data');
-const dbPath = join(dbDir, 'novel-ai.sqlite');
+const projectRoot = resolve(__dirname, '..');
+const defaultDbPath = join(projectRoot, '.data', 'novel-ai.sqlite');
 
-mkdirSync(dbDir, { recursive: true });
+/**
+ * 数据库路径解析（T003）
+ * 支持 NOVEL_DB_PATH 环境变量，用于测试库与开发库隔离（需求 F077 的前置）。
+ * - 绝对路径：原样使用
+ * - 相对路径：相对项目根目录解析
+ * - 未设置：默认 .data/novel-ai.sqlite
+ */
+function resolveDbPath() {
+  const raw = process.env.NOVEL_DB_PATH;
+  if (!raw) return defaultDbPath;
+  return isAbsolute(raw) ? raw : resolve(projectRoot, raw);
+}
+
+export const dbPath = resolveDbPath();
+
+mkdirSync(dirname(dbPath), { recursive: true });
 
 const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA journal_mode = WAL');
+// X3 实测：跨进程并发写时，无 busy_timeout 的失败率为 88%（1411/1600 次写失败）；
+// 设为 5000ms 后失败率降为 0。这是解除 Playwright workers:1 限制的前提。
+db.exec('PRAGMA busy_timeout = 5000');
 
 function run(sql, params = []) {
   return db.prepare(sql).run(...params);
@@ -385,7 +405,9 @@ function logAudit(action, payload, userId = 1) {
 
 function getBootstrapData() {
   const user = get('SELECT * FROM users WHERE username = ?', ['local-author']);
-  const project = get('SELECT * FROM projects WHERE user_id = ? ORDER BY id LIMIT 1', [user.id]);
+  const rawProject = get('SELECT * FROM projects WHERE user_id = ? ORDER BY id LIMIT 1', [user.id]);
+  // F075：project 一律走 sanitizeProject，响应体里不留 cipher/salt/明文
+  const project = { ...sanitizeProject(rawProject), ...getProjectKeyMeta(rawProject.id) };
   return {
     user,
     project,
@@ -436,8 +458,24 @@ function createChapter({ projectId, title, content }) {
     [projectId, title, content, '写作中 · AI 同步辅助', timestamp, timestamp]
   );
   const chapterId = Number(result.lastInsertRowid);
-  run('INSERT INTO chapter_versions (chapter_id, content, version, created_at) VALUES (?, ?, ?, ?)', [chapterId, content, 1, timestamp]);
+  run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'auto', '初始版本', ?)", [chapterId, content, 1, timestamp]);
   logAudit('chapter.create', { projectId, chapterId, title });
+  return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
+}
+
+/**
+ * 草稿保存（F076）：只更新正文，**不写入 chapter_versions**。
+ *
+ * 依据 X4 实测：2 小时写作 × 3s 防抖 = 单章 360 个版本 / 3.18MB，
+ * 折算 100 章约 318MB，且版本列表单次返回 108 万字。
+ * 因此防抖自动保存走草稿通道，只有「手动存稿」与「里程碑快照」才生成版本。
+ */
+function saveDraft(chapterId, content) {
+  const chapter = get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
+  if (!chapter) return null;
+  const timestamp = now();
+  run('UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?', [content, timestamp, chapterId]);
+  // 刻意不写 chapter_versions、不写审计日志 —— 否则高频自动保存会撑爆两张表
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
 
@@ -447,7 +485,8 @@ function saveChapter(chapterId, content) {
   const version = chapter.version + 1;
   const timestamp = now();
   run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?', [content, version, '已存稿 · 待校验', timestamp, chapterId]);
-  run('INSERT INTO chapter_versions (chapter_id, content, version, created_at) VALUES (?, ?, ?, ?)', [chapterId, content, version, timestamp]);
+  // kind='manual'：手动存稿才进版本表（kind/name 由 v1 迁移新增）
+  run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', '', ?)", [chapterId, content, version, timestamp]);
   logAudit('chapter.save', { chapterId, version });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -460,7 +499,7 @@ function archiveChapter(chapterId) {
 }
 
 function listChapterVersions(chapterId) {
-  return all('SELECT id, chapter_id, version, content, created_at FROM chapter_versions WHERE chapter_id = ? ORDER BY version DESC', [chapterId]);
+  return all('SELECT id, chapter_id, version, content, kind, name, created_at FROM chapter_versions WHERE chapter_id = ? ORDER BY version DESC', [chapterId]);
 }
 
 function rollbackChapter(chapterId, version) {
@@ -470,7 +509,7 @@ function rollbackChapter(chapterId, version) {
   const nextVersion = chapter.version + 1;
   const timestamp = now();
   run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?', [target.content, nextVersion, '已回滚 · 待校验', timestamp, chapterId]);
-  run('INSERT INTO chapter_versions (chapter_id, content, version, created_at) VALUES (?, ?, ?, ?)', [chapterId, target.content, nextVersion, timestamp]);
+  run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', ?, ?)", [chapterId, target.content, nextVersion, `回滚自 v${version}`, timestamp]);
   logAudit('chapter.rollback', { chapterId, fromVersion: version, nextVersion });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -668,10 +707,104 @@ function checkSensitiveText(projectId, text) {
   return { matches, checkedAt: now() };
 }
 
-function updateAiSettings({ projectId, baseUrl, model }) {
+/**
+ * 项目对象脱敏（F075）：接口层永不返回密钥原文、密文或盐。
+ *
+ * 只要一个 `SELECT * FROM projects` 的结果直接进响应体，cipher/salt 就会跟着出去。
+ * 密文虽然不可直接利用，但落到浏览器缓存 / 导出的 JSON 里等于把加密材料拱手让人，
+ * 因此这里统一「白名单字段 + 布尔标记 + 掩码」，而不是「删掉两个字段」。
+ *
+ * @param {object|null|undefined} project 原始 projects 行
+ * @returns {object|null} 脱敏后的项目对象
+ */
+export function sanitizeProject(project) {
+  if (!project) return null;
+  const { api_key_cipher, api_key_salt, ...rest } = project;
+  void api_key_salt; // 未使用，仅用于从 rest 中剔除
+  return {
+    ...rest,
+    hasApiKey: Boolean(api_key_cipher)
+  };
+}
+
+/**
+ * 读取项目已保存密钥的掩码（用于 UI 回填 placeholder）。
+ * 解密失败不抛异常 —— 掩码只是展示，失败时退化为「已配置但无法解密」。
+ *
+ * @param {number} projectId 项目 ID
+ * @returns {{hasApiKey: boolean, apiKeyMasked: string, decryptable: boolean}}
+ */
+export function getProjectKeyMeta(projectId) {
+  const row = get('SELECT api_key_cipher, api_key_salt FROM projects WHERE id = ?', [projectId]);
+  if (!row || !row.api_key_cipher) return { hasApiKey: false, apiKeyMasked: '', decryptable: true };
+  try {
+    return {
+      hasApiKey: true,
+      apiKeyMasked: maskSecret(decryptSecret(row.api_key_cipher, row.api_key_salt)),
+      decryptable: true
+    };
+  } catch {
+    // 主密钥被换掉时走到这里。UI 需要能区分「没配」和「配了但解不开」，
+    // 否则用户会以为自己从没保存过密钥，反复重试。
+    return { hasApiKey: true, apiKeyMasked: '已配置但无法解密', decryptable: false };
+  }
+}
+
+/**
+ * 取出项目已保存密钥的明文，供 AI 调用使用。
+ *
+ * 刻意返回 { apiKey, error } 而不是直接抛：调用方（/api/novel/ai）需要把
+ * 「解密失败」转成人能看懂的提示。若在这里抛异常，最终只剩一个 500，
+ * 用户看到的是「AI 挂了」而不是「你的主密钥丢了」。
+ *
+ * @param {number} projectId 项目 ID
+ * @returns {{apiKey: string, error: string|null}}
+ */
+export function loadProjectSecret(projectId) {
+  const row = get('SELECT api_key_cipher, api_key_salt FROM projects WHERE id = ?', [projectId]);
+  if (!row || !row.api_key_cipher) return { apiKey: '', error: null };
+  try {
+    return { apiKey: decryptSecret(row.api_key_cipher, row.api_key_salt), error: null };
+  } catch (error) {
+    return {
+      apiKey: '',
+      error: `项目已保存的密钥无法解密（${error.message}）。常见原因是 ~/.novel-ai/master.key 被替换、丢失或版本不匹配的备份覆盖；请恢复主密钥备份，或在 AI 配置中重新填写密钥。`
+    };
+  }
+}
+
+/** 「移除密钥」哨兵值：前端传这个字符串表示清空，避免与「留空不修改」歧义 */
+export const CLEAR_API_KEY = '__CLEAR__';
+
+/**
+ * 更新 AI 配置（F075）。
+ *
+ * apiKey 三态语义（关键，避免用户「只改模型」就把密钥清空）：
+ *   - 非空且非哨兵 → 加密后覆盖写入
+ *   - 空字符串 / 不传 → 不修改，保持原值
+ *   - '__CLEAR__'   → 清空密文与盐
+ *
+ * @param {{projectId:number, baseUrl?:string, model?:string, apiKey?:string}} params
+ * @returns {object|null} 脱敏后的项目配置
+ */
+function updateAiSettings({ projectId, baseUrl, model, apiKey }) {
   const timestamp = now();
-  run('UPDATE projects SET ai_base_url = ?, ai_model = ?, updated_at = ? WHERE id = ?', [baseUrl, model, timestamp, projectId]);
-  logAudit('settings.ai.update', { projectId, baseUrl: baseUrl ? '[configured]' : '', model });
+
+  if (apiKey === CLEAR_API_KEY) {
+    run('UPDATE projects SET ai_base_url = ?, ai_model = ?, api_key_cipher = ?, api_key_salt = ?, updated_at = ? WHERE id = ?',
+      [baseUrl, model, '', '', timestamp, projectId]);
+    logAudit('settings.ai.update', { projectId, baseUrl: baseUrl ? '[configured]' : '', model, apiKey: '[cleared]' });
+  } else if (apiKey) {
+    const { cipher, salt } = encryptSecret(apiKey);
+    run('UPDATE projects SET ai_base_url = ?, ai_model = ?, api_key_cipher = ?, api_key_salt = ?, updated_at = ? WHERE id = ?',
+      [baseUrl, model, cipher, salt, timestamp, projectId]);
+    // 审计日志只记动作与掩码，绝不记明文
+    logAudit('settings.ai.update', { projectId, baseUrl: baseUrl ? '[configured]' : '', model, apiKey: maskSecret(apiKey) });
+  } else {
+    run('UPDATE projects SET ai_base_url = ?, ai_model = ?, updated_at = ? WHERE id = ?', [baseUrl, model, timestamp, projectId]);
+    logAudit('settings.ai.update', { projectId, baseUrl: baseUrl ? '[configured]' : '', model, apiKey: '[unchanged]' });
+  }
+
   return get('SELECT id, ai_base_url, ai_model FROM projects WHERE id = ?', [projectId]);
 }
 
@@ -718,7 +851,7 @@ function exportProject(projectId) {
   const project = get('SELECT * FROM projects WHERE id = ?', [projectId]);
   return {
     exportedAt: now(),
-    project,
+    project: sanitizeProject(project),   // 导出 JSON 同样不能带出加密材料
     chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY id', [projectId]),
     relations: all('SELECT * FROM character_relations WHERE project_id = ? ORDER BY id', [projectId]),
     knowledge: all('SELECT * FROM knowledge_entries WHERE scope = ? OR project_id = ? ORDER BY id', ['global', projectId]),
@@ -795,4 +928,11 @@ function recordAiTask({ projectId, chapterId, taskType, input, output, provider 
 
 initDb();
 
-export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getDashboardStats, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+// T004：schema 版本迁移（零依赖，基于 PRAGMA user_version）
+// 迁移失败会直接抛出异常终止启动 —— 绝不带半截 schema 继续运行。
+const migrationResult = migrate(db);
+if (migrationResult.applied.length) {
+  console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
+}
+
+export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getDashboardStats, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };

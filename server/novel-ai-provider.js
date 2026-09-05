@@ -124,9 +124,19 @@ function buildPrompt({ taskType, project, chapter, context }) {
   ].filter(Boolean).join('\n');
 }
 
-async function callOpenAICompatible({ project, taskType, prompt }) {
+/**
+ * 调用 OpenAI 兼容接口。
+ *
+ * apiKey 由调用方按优先级链解析后传入（F075）：
+ *   1. 项目库中已保存并成功解密的密钥
+ *   2. 环境变量 NOVEL_AI_API_KEY（向后兼容，保留）
+ *   3. 都没有 → 本函数返回 null，由 runAiTask 走 mock 降级
+ *
+ * @param {{project:object, taskType:string, prompt:string, apiKey:string}} params
+ * @returns {Promise<{provider:string, items:Array}|null>} null 表示无可用密钥/配置，应降级
+ */
+async function callOpenAICompatible({ project, taskType, prompt, apiKey }) {
   const baseUrl = process.env.NOVEL_AI_BASE_URL || project.ai_base_url;
-  const apiKey = process.env.NOVEL_AI_API_KEY;
   const model = process.env.NOVEL_AI_MODEL || project.ai_model;
   if (!baseUrl || !apiKey || model === 'mock-novel-copilot') return null;
 
@@ -167,9 +177,41 @@ async function callOpenAICompatible({ project, taskType, prompt }) {
   }
 }
 
-async function runAiTask({ taskType, project, chapter, context }) {
+/**
+ * mock 结果顶部提示（F075 A4）。
+ * 未配置任何密钥时必须让作者知道「这不是模型输出」，
+ * 否则内置示例数据会被误当成 AI 的真实建议。
+ */
+const MOCK_NOTICE = {
+  title: '本地演示模式（mock）',
+  body: '未检测到可用密钥，以下建议为内置示例数据，非真实模型输出。在「AI 配置与 Prompt 模板」中填写 API Key 后将调用真实模型。',
+  tone: 'warning'
+};
+
+/**
+ * 执行一个 AI 任务。
+ *
+ * @param {{taskType:string, project:object, chapter:object|null, context:object,
+ *          apiKey?:string, apiKeyError?:string|null}} params
+ *   apiKey      项目库解密所得密钥（空串表示项目未配置，回落到环境变量）
+ *   apiKeyError 项目库密钥解密失败的原因；非空时**直接返回可读错误**，
+ *               绝不静默降级成 mock —— 否则用户会以为 AI 正常工作。
+ * @returns {Promise<{provider:string, prompt:string, items:Array}>}
+ */
+async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null }) {
   const prompt = buildPrompt({ taskType, project, chapter, context });
-  const providerResult = await callOpenAICompatible({ project, taskType, prompt }).catch(error => ({
+
+  // 解密失败优先于一切：这是可修复的配置故障，必须让用户看见
+  if (apiKeyError) {
+    return {
+      provider: 'secret-error',
+      prompt,
+      items: [{ title: 'AI 密钥不可用', body: apiKeyError, tone: 'danger' }]
+    };
+  }
+
+  const resolvedKey = apiKey || process.env.NOVEL_AI_API_KEY || '';
+  const providerResult = await callOpenAICompatible({ project, taskType, prompt, apiKey: resolvedKey }).catch(error => ({
     provider: 'mock-fallback',
     items: [[`AI 接口降级`, `真实模型调用失败，已切换 mock：${error.message}`, 'warning']]
   }));
@@ -185,7 +227,7 @@ async function runAiTask({ taskType, project, chapter, context }) {
   return {
     provider: 'mock',
     prompt,
-    items: (taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))
+    items: [MOCK_NOTICE, ...(taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))]
   };
 }
 

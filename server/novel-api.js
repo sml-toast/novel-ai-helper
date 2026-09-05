@@ -1,25 +1,54 @@
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getBootstrapData, getDashboardStats, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, recordAiTask, rollbackChapter, saveChapter, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getBootstrapData, getDashboardStats, getProjectKeyMeta, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { runAiTask } from './novel-ai-provider.js';
+import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
+import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
 import { createPublishTask, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
 
 const port = Number(process.env.NOVEL_API_PORT || 8787);
 
+/**
+ * F074：不再无脑返回 `access-control-allow-origin: *`。
+ * 仅当请求 Origin 在白名单内才回显该 Origin（配合 Vary: Origin）。
+ * corsOrigin 由 handle() 在鉴权通过后写入 res.locals。
+ */
 function send(res, status, payload) {
-  res.writeHead(status, {
+  const corsOrigin = res.locals?.corsOrigin || null;
+  const headers = {
     'content-type': 'application/json; charset=utf-8',
-    'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,OPTIONS',
     'access-control-allow-headers': 'content-type'
-  });
+  };
+  if (corsOrigin) {
+    headers['access-control-allow-origin'] = corsOrigin;
+    headers['vary'] = 'Origin';
+  }
+  res.writeHead(status, headers);
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * X5：原实现无上限累积 body，实测 50MB 请求被完整读入、堆占用 109MB。
+ * 超过 2MB 立即中断连接并抛 PAYLOAD_TOO_LARGE（由 handle() 转为 413）。
+ */
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > MAX_BODY_BYTES) {
+        // 只暂停读取（停止继续吃内存），不在这里 destroy ——
+        // 否则 413 响应发不出去，客户端只能看到连接被重置。
+        // 响应与断连统一由 handle() 的 catch 处理。
+        reject(new Error('PAYLOAD_TOO_LARGE'));
+        req.pause();
+        return;
+      }
+      body += chunk;
+    });
     req.on('end', () => {
       if (!body) return resolve({});
       try { resolve(JSON.parse(body)); } catch (error) { reject(error); }
@@ -29,7 +58,22 @@ function readJson(req) {
 }
 
 async function handle(req, res) {
-  if (req.method === 'OPTIONS') return send(res, 204, {});
+  // F074 鉴权：非白名单 Origin 一律拒绝
+  res.locals = { corsOrigin: null };
+
+  // OPTIONS 预检：非法 Origin 直接 403，不再无脑 204
+  if (req.method === 'OPTIONS') {
+    const preflightOrigin = req.headers.origin;
+    if (preflightOrigin && !ALLOWED_ORIGINS.has(preflightOrigin)) {
+      return send(res, 403, { error: 'origin not allowed' });
+    }
+    res.locals.corsOrigin = preflightOrigin || null;
+    return send(res, 204, {});
+  }
+
+  const auth = authMiddleware(req);
+  if (!auth.ok) return send(res, auth.status, { error: auth.error });
+  res.locals.corsOrigin = auth.corsOrigin;
 
   const url = new URL(req.url, `http://${req.headers.host}`);
   const bootstrap = getBootstrapData();
@@ -54,9 +98,35 @@ async function handle(req, res) {
       return send(res, 201, { progress: addWritingProgress({ projectId, words: Number(body.words || 0), note: body.note || '' }) });
     }
 
+    // F075：apiKey 三态 —— 非空则加密覆盖；空/不传则保持原值；'__CLEAR__' 则清空
     if (req.method === 'POST' && url.pathname === '/api/novel/settings/ai') {
       const body = await readJson(req);
-      return send(res, 200, { settings: updateAiSettings({ projectId, baseUrl: body.baseUrl || '', model: body.model || 'mock-novel-copilot' }) });
+      const settings = updateAiSettings({
+        projectId,
+        baseUrl: body.baseUrl || '',
+        model: body.model || 'mock-novel-copilot',
+        apiKey: typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+      });
+      return send(res, 200, { settings, key: getProjectKeyMeta(projectId) });
+    }
+
+    /**
+     * F075 A4：主密钥备份引导。
+     * 返回主密钥文件本身供用户另存 —— 这是「已保存密钥可迁移」的唯一手段：
+     * 实测主密钥丢失后重建，旧密文永久无法解密。
+     * 仅在白名单 Origin / 无 Origin 下可达（authMiddleware 已拦截非法来源）。
+     * 安全边界说明：该端点会把主密钥原文发给调用方。它依赖 F074 的 Origin
+     * 白名单（仅本机静态页面可达）+ 127.0.0.1 绑定，等价于「用户在本机自己
+     * cat 这个文件」。若将来放开 NOVEL_ALLOWED_ORIGINS，必须先摘掉这个端点。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/novel/settings/ai/master-key') {
+      loadOrCreateMasterKey(); // 不存在则先落盘，保证下面的指纹与内容一致
+      return send(res, 200, {
+        path: getMasterKeyPath(),
+        exists: true,
+        fingerprint: masterKeyFingerprint(),
+        content: readFileSync(getMasterKeyPath()).toString('base64')
+      });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/prompts') {
@@ -94,6 +164,15 @@ async function handle(req, res) {
       const chapterId = Number(url.pathname.split('/')[4]);
       const body = await readJson(req);
       const chapter = saveChapter(chapterId, body.content || '');
+      return chapter ? send(res, 200, { chapter }) : send(res, 404, { error: 'chapter not found' });
+    }
+
+    // F076 草稿通道：防抖自动保存走这里，**不生成版本**。
+    // 与 /save 的区别：/save = 手动存稿（进版本表，kind='manual'）；/draft = 自动保存（只更新正文）。
+    if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/chapters\/\d+\/draft$/)) {
+      const chapterId = Number(url.pathname.split('/')[4]);
+      const body = await readJson(req);
+      const chapter = saveDraft(chapterId, body.content || '');
       return chapter ? send(res, 200, { chapter }) : send(res, 404, { error: 'chapter not found' });
     }
 
@@ -261,10 +340,16 @@ async function handle(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/novel/ai') {
       const body = await readJson(req);
       const chapter = body.chapterId ? get('SELECT * FROM chapters WHERE id = ?', [Number(body.chapterId)]) : null;
+      // F075 优先级链：项目库已存密钥 → 环境变量 NOVEL_AI_API_KEY → mock。
+      // loadProjectSecret 不抛异常，解密失败会以 error 字段返回，交给 provider 转成可读提示，
+      // 避免「主密钥丢了」被包装成一个无信息的 500。
+      const secret = loadProjectSecret(projectId);
       const result = await runAiTask({
         taskType: body.taskType || 'sync',
         project: bootstrap.project,
         chapter,
+        apiKey: secret.apiKey,
+        apiKeyError: secret.error,
         context: {
           relations: bootstrap.relations,
           knowledge: bootstrap.knowledge,
@@ -323,10 +408,21 @@ async function handle(req, res) {
 
     return send(res, 404, { error: 'not found' });
   } catch (error) {
+    if (error.message === 'PAYLOAD_TOO_LARGE') {
+      send(res, 413, { error: `request body exceeds ${MAX_BODY_BYTES} bytes` });
+      req.destroy(); // 响应已发出，丢弃剩余请求体并断开
+      return;
+    }
     return send(res, 500, { error: error.message });
   }
 }
 
-createServer(handle).listen(port, () => {
-  console.log(`Novel AI API listening on http://127.0.0.1:${port}`);
+// X1 修复：不传 host 时 Node 会绑定 ::（所有网卡），局域网可直接访问，
+// 而日志却打印 127.0.0.1，极具误导性。默认显式绑定本机回环。
+// 确需局域网/其他设备访问时：NOVEL_API_HOST=0.0.0.0（请自行评估风险）。
+const host = process.env.NOVEL_API_HOST || '127.0.0.1';
+
+createServer(handle).listen(port, host, () => {
+  console.log(`Novel AI API listening on http://${host}:${port}`);
+  console.log(`[auth] 允许的跨域来源：${[...ALLOWED_ORIGINS].join(', ')}`);
 });
