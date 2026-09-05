@@ -1,4 +1,6 @@
-import { test, expect } from '@playwright/test';
+// 用共享夹具而非 @playwright/test：夹具会给页面注入测试用的 API 端口，
+// 否则 novel-ai.js 会按默认值去连 8787（开发进程 / 开发库）。
+import { test, expect } from './fixtures.js';
 
 test.describe('Novel AI 助手 - 基础验证', () => {
   test.beforeEach(async ({ page }) => {
