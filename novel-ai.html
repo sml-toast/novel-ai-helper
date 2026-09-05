@@ -9,7 +9,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./novel-ai.css" />
-  <script>window.NOVEL_API_PORT = 8787;</script>
+  <!-- F077：只给默认值，不无条件覆盖 —— Playwright 夹具经 addInitScript 注入的
+       测试端口（8788）先于本脚本执行，若这里直接赋值会把端口改回 8787，
+       页面就会连去开发进程/开发库，测试与数据彻底脱节。 -->
+  <script>window.NOVEL_API_PORT = window.NOVEL_API_PORT || 8787;</script>
   <script type="module" src="./novel-ai.js"></script>
 </head>
 <body>

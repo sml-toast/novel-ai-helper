@@ -64,8 +64,15 @@ test.describe('Novel AI 助手 - 知识库功能测试', () => {
     ).toContainText('历史与文献搜索');
 
     // 搜索结果最终落在两个知识列表容器里，容器必须存在。
-    await expect(page.locator('#globalKnowledge')).toBeVisible();
-    await expect(page.locator('#projectKnowledge')).toBeVisible();
+    // 「黑潮」只命中项目知识里的《黑潮》词条；写作知识库（global）无匹配 ——
+    // 空结果容器高度为 0，Playwright 视为不可见，这是正常行为，
+    // 因此这里断言「命中卡片可见 + 空容器仍在文档中」，而不是无脑要求两者可见。
+    await expect(
+      page.locator('#projectKnowledge .knowledge-card').filter({ hasText: '黑潮' }).first(),
+      '搜索「黑潮」应命中项目知识中的《黑潮》词条'
+    ).toBeVisible();
+    await expect(page.locator('#globalKnowledge'), 'global 容器应存在（可能为空结果）').toBeAttached();
+    await expect(page.locator('#projectKnowledge')).toBeAttached();
   });
 
   test('知识库节点应可交互', async ({ page }) => {
