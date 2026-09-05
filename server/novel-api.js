@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, projectExists, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { resolveProjectId } from './novel-project.js';
 import { runAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
@@ -79,14 +80,17 @@ async function handle(req, res) {
   // 性能：bootstrap（全部章节正文 + 图谱构建）绝不在每个请求上无条件执行。
   // 绝大多数分支只需要 projectId；/bootstrap、/chapters(POST)、/ai 各自按需取数。
   // 实测（200 章 × 3KB）：此前每个轻量请求固定多付 ~5ms，且随章节数线性增长。
-  const projectId = getCurrentProjectId();
-  if (projectId == null) {
-    return send(res, 500, { error: 'no project initialized: database seeding failed or NOVEL_DB_PATH points to an empty database' });
+  //
+  // F079 多项目上下文：?projectId= → X-Project-Id 头 → 默认项目（id 最小，旧请求零破坏）。
+  // 项目不存在必须显式 404 —— 静默回落会让用户在错误的项目里继续写稿。
+  const projectId = resolveProjectId(url, req, getCurrentProjectId());
+  if (!projectExists(projectId)) {
+    return send(res, 404, { error: 'project not found' });
   }
 
   try {
     if (req.method === 'GET' && url.pathname === '/api/novel/bootstrap') {
-      return send(res, 200, getBootstrapData());
+      return send(res, 200, getBootstrapData(projectId));
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/dashboard') {
@@ -383,11 +387,8 @@ async function handle(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/export/project') {
-      // F078：支持 ?projectId= 指定导出目标（导入生成的新项目可据此验证与再次导出）。
-      // 完整的项目归属校验随 F079 多项目中间件统一落地；单用户场景下此处只做存在性校验。
-      const requested = Number(url.searchParams.get('projectId'));
-      const targetId = Number.isInteger(requested) && requested > 0 ? requested : projectId;
-      const data = exportProject(targetId);
+      // F078 起支持 ?projectId=；F079 后由统一的 resolveProjectId 处理（含 X-Project-Id 头）。
+      const data = exportProject(projectId);
       return data ? send(res, 200, data) : send(res, 404, { error: 'project not found' });
     }
 

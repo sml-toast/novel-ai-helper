@@ -224,9 +224,16 @@ let state = fallbackState;
 let activeChapter = fallbackState.chapters[2];
 let apiOnline = false;
 let activeGraphType = 'all';
+// F079：当前项目上下文。null = 尚未从服务端获知（首次载入/离线兜底），apiFetch 不注入
+let currentProjectId = null;
 
 async function apiFetch(path, options = {}) {
-  const response = await fetch(`${apiBase}${path}`, {
+  // F079：所有请求携带当前项目上下文（?projectId=）。离线兜底时不注入，
+  // 让服务端按默认项目回落。注意注入要放在 fetch 之前拼好 URL。
+  const scopedPath = currentProjectId == null
+    ? path
+    : `${path}${path.includes('?') ? '&' : '?'}projectId=${currentProjectId}`;
+  const response = await fetch(`${apiBase}${scopedPath}`, {
     ...options,
     headers: { 'content-type': 'application/json', ...(options.headers || {}) }
   });
@@ -244,6 +251,8 @@ async function loadBootstrap() {
   try {
     state = await apiFetch('/bootstrap');
     apiOnline = true;
+    // F079：以服务端返回为准（首次载入定位默认项目；切换时此处已是目标项目）
+    currentProjectId = state.project.id;
     activeChapter = state.chapters[state.chapters.length - 1] || fallbackState.chapters[0];
   } catch (error) {
     apiOnline = false;
@@ -258,6 +267,7 @@ async function loadBootstrap() {
 function renderAll() {
   renderApiStatus();
   renderProject();
+  renderProjectSwitcher();
   renderChapters();
   renderEditor();
   renderAssist('ideas');
@@ -523,42 +533,79 @@ async function checkLocalDraft() {
   // 'later'：保留 localStorage，下次载入该章节时再问
 }
 
+/**
+ * 离开当前编辑上下文（切章 / 切项目共用，F079）的 dirty 拦截。
+ * @param {string} what 去向描述，如「切换章节」「切换项目」
+ * @returns {Promise<boolean>} true = 修改已处理（保存成功或用户放弃），可以离开
+ */
+async function confirmDirtyLeave(what) {
+  if (!isDirty()) return true;
+  const choice = await showModal({
+    title: '当前章节有未保存的修改',
+    bodyHtml: `<p>《${escapeHtml(activeChapter.title)}》还有改动没有写入服务器，${escapeHtml(what)}前请选择处理方式。</p>`,
+    actions: [
+      { label: '保存并离开', value: 'save', variant: 'primary-btn' },
+      { label: '放弃修改', value: 'discard' },
+      { label: '取消', value: 'cancel' }
+    ]
+  });
+  // 弹窗期间用户可能继续输入，取消时编辑器内容原样保留
+  if (choice === 'cancel') return false;
+  if (choice === 'save') {
+    await autoSaveNow();
+    if (isDirty()) {
+      // 保存失败时不能默默丢稿，再确认一次
+      const forced = await showModal({
+        title: '自动保存失败',
+        bodyHtml: `<p>改动未能写入服务器。${escapeHtml(what)}会丢失这些修改，是否继续？</p>`,
+        actions: [
+          { label: '放弃修改并继续', value: 'discard' },
+          { label: '留在当前章节', value: 'cancel', variant: 'primary-btn' }
+        ]
+      });
+      return forced === 'discard';
+    }
+  }
+  return true;
+}
+
 /** 切换章节（带 dirty 拦截） */
 async function switchChapter(chapterId) {
   const next = state.chapters.find(chapter => chapter.id === chapterId);
   if (!next) return;
   if (activeChapter && next.id === activeChapter.id) return;
 
-  if (isDirty()) {
-    const choice = await showModal({
-      title: '当前章节有未保存的修改',
-      bodyHtml: `<p>《${escapeHtml(activeChapter.title)}》还有改动没有写入服务器，切换章节前请选择处理方式。</p>`,
-      actions: [
-        { label: '保存并切换', value: 'save', variant: 'primary-btn' },
-        { label: '放弃修改', value: 'discard' },
-        { label: '取消', value: 'cancel' }
-      ]
-    });
-    // 弹窗期间用户可能继续输入，取消时编辑器内容原样保留
-    if (choice === 'cancel') return;
-    if (choice === 'save') {
-      await autoSaveNow();
-      if (isDirty()) {
-        // 保存失败时不能默默丢稿，再确认一次
-        const forced = await showModal({
-          title: '自动保存失败',
-          bodyHtml: '<p>改动未能写入服务器。切换章节会丢失这些修改，是否继续？</p>',
-          actions: [
-            { label: '放弃修改并切换', value: 'discard' },
-            { label: '留在当前章节', value: 'cancel', variant: 'primary-btn' }
-          ]
-        });
-        if (forced !== 'discard') return;
-      }
-    }
-  }
-
+  if (!(await confirmDirtyLeave('切换章节'))) return;
   adoptChapter(next);
+}
+
+/**
+ * 切换项目（F079）：与切章相同的 dirty 拦截策略，切换后整体重载该项目数据。
+ * 取消时调用 renderProjectSwitcher() 把 <select> 的显示值拉回当前项目 ——
+ * 用户的 change 已经改变了 DOM 选中项，不做回显就会出现「下拉显示 B、实际在 A」的错位。
+ */
+async function switchProject(nextProjectId) {
+  if (!apiOnline || nextProjectId === currentProjectId) return;
+  if (!(await confirmDirtyLeave('切换项目'))) {
+    renderProjectSwitcher();
+    return;
+  }
+  currentProjectId = nextProjectId;
+  await loadBootstrap();
+}
+
+/**
+ * 渲染项目切换器（F079）。只有一个项目时隐藏 —— 单项目用户不该看到一个
+ * 只有自己、永远切不动的下拉框。
+ */
+function renderProjectSwitcher() {
+  const select = document.querySelector('#projectSwitcher');
+  if (!select) return;
+  const projects = state.projects || [];
+  select.hidden = projects.length < 2;
+  select.innerHTML = projects.map(project =>
+    `<option value="${escapeHtml(String(project.id))}"${project.id === currentProjectId ? ' selected' : ''}>${escapeHtml(project.title)}（${project.chapter_count} 章）</option>`
+  ).join('');
 }
 
 /** 载入新章节并重置保存状态机 */
@@ -620,6 +667,15 @@ function closeModal(value) {
 if (modalMask) {
   modalMask.addEventListener('click', event => {
     if (event.target === modalMask) closeModal('cancel');
+  });
+}
+
+// F079：项目切换。change 事件在模块级挂一次 —— #projectSwitcher 是静态 DOM，
+// renderProjectSwitcher 只重绘 option，不会重挂监听。
+const projectSwitcher = document.querySelector('#projectSwitcher');
+if (projectSwitcher) {
+  projectSwitcher.addEventListener('change', event => {
+    switchProject(Number(event.target.value));
   });
 }
 
@@ -917,6 +973,35 @@ async function createProject() {
   const title = document.querySelector('#projectTitleInput').value.trim();
   const genre = document.querySelector('#projectGenreInput').value.trim();
   if (!apiOnline) return flashAssist('项目创建', 'API 未启动，无法写入 SQLite。', 'warning');
+  await createProjectAndSwitch({ title, genre });
+}
+
+/**
+ * 新建项目向导（F079）：侧栏「新建」按钮的入口。
+ * 弹窗收集标题/题材 → 创建 → 自动切换。模态框关闭后 innerHTML 仍在，
+ * 因此在 confirmDirtyLeave（可能开第二个弹窗）之前先把输入值读出来。
+ */
+async function newProjectWizard() {
+  if (!apiOnline) return flashAssist('新建项目', 'API 未启动，无法写入 SQLite。', 'warning');
+  const choice = await showModal({
+    title: '新建项目',
+    bodyHtml: `<div class="form-grid">
+        <input id="newProjectTitleInput" type="text" placeholder="项目标题（默认：未命名小说）" />
+        <input id="newProjectGenreInput" type="text" placeholder="题材（默认：类型待定）" />
+      </div>`,
+    actions: [
+      { label: '创建', value: 'create', variant: 'primary-btn' },
+      { label: '取消', value: 'cancel' }
+    ]
+  });
+  if (choice !== 'create') return;
+  const title = document.querySelector('#newProjectTitleInput')?.value.trim() || '';
+  const genre = document.querySelector('#newProjectGenreInput')?.value.trim() || '';
+  await createProjectAndSwitch({ title, genre });
+}
+
+/** 创建并切换（F079）。settings 表单与侧栏向导共用。 */
+async function createProjectAndSwitch({ title, genre }) {
   try {
     const result = await apiFetch('/projects', {
       method: 'POST',
@@ -928,7 +1013,13 @@ async function createProject() {
         writingStyle: '强钩子、快节奏、画面感'
       })
     });
-    flashAssist('项目创建完成', `已创建《${result.project.title}》，可作为后续项目切换能力的数据基础。`);
+    // 创建后直接切换到新项目（复用 dirty 拦截；若用户在拦截里取消，
+    // 项目已创建但不切换，消息按实际结果区分）
+    await switchProject(result.project.id);
+    const switched = currentProjectId === result.project.id;
+    flashAssist('项目创建完成', switched
+      ? `已创建《${result.project.title}》并切换到新项目，可继续新建章节开始写作。`
+      : `已创建《${result.project.title}》，可用左上角切换器进入。`);
   } catch (error) {
     flashAssist('项目创建失败', error.message, 'danger');
   }
@@ -1492,7 +1583,7 @@ async function exportChapterFile() {
 /**
  * F078 导入回灌：选择导出 JSON → 预检格式 → 用户选择模式 → POST /import。
  *   replace：覆盖当前项目（服务端会先做整库 VACUUM INTO 备份，结果里带回备份路径）；
- *   new    ：导入为新项目，不影响现有数据（多项目切换上线前，新项目暂不能在界面直接打开）。
+ *   new    ：导入为新项目，不影响现有数据；导入成功后直接切换过去（F079 切换器）。
  * 动态创建 file input 而不是常驻 DOM：导入是低频操作，没必要给每个页面实例挂一个隐藏控件。
  */
 async function importProjectFile() {
@@ -1534,9 +1625,17 @@ async function importProjectFile() {
         .filter(([, count]) => count > 0)
         .map(([name, count]) => `${name} ${count}`)
         .join('、');
-      const modeLabel = result.mode === 'replace' ? '已覆盖当前项目' : '已导入为新项目（多项目切换上线前暂不能在界面直接打开）';
-      flashAssist('项目导入完成', `${modeLabel}。写入：${counts || '无数据'}。备份：${result.backupPath}`);
-      if (choice === 'replace') await loadBootstrap();
+      if (result.mode === 'replace') {
+        await loadBootstrap();
+        flashAssist('项目导入完成', `已覆盖当前项目。写入：${counts || '无数据'}。备份：${result.backupPath}`);
+      } else {
+        // F079：新项目导入后直接切过去（有 dirty 拦截兜底）；取消时提示用切换器
+        await switchProject(result.projectId);
+        const switched = currentProjectId === result.projectId;
+        flashAssist('项目导入完成', switched
+          ? `已导入《${payload.project.title || '未命名项目'}》并切换到新项目。备份：${result.backupPath}`
+          : `已导入为新项目，可用左上角切换器进入。备份：${result.backupPath}`);
+      }
     } catch (error) {
       flashAssist('项目导入失败', error.message, 'danger');
     }
@@ -1761,7 +1860,7 @@ document.addEventListener('click', event => {
   if (action === 'load-scenes') return loadScenes();
   if (action === 'add-world') return addWorld();
   if (action === 'load-world') return loadWorld();
-  if (action === 'new-project') return flashAssist('新建项目入口', '全栈实现时将进入项目创建向导：题材、平台、风格、AI 模型与知识库范围。');
+  if (action === 'new-project') return newProjectWizard();
   if (action === 'open-log') return openLogDrawer();
   if (action === 'compress-logs') return compressLogs();
   if (action === 'clear-logs') return clearLogs();

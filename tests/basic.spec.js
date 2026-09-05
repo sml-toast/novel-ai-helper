@@ -32,4 +32,25 @@ test.describe('Novel AI 助手 - 基础验证', () => {
     await page.waitForTimeout(300);
     await expect(page.locator('#logDrawer')).toBeVisible();
   });
+
+  // F079：项目切换器。注意并行契约用例也会往共享测试库建项目，
+  // 因此不能假设「初始只有一个项目」/选项总数，只断言与本次操作相关的行为。
+  test('项目切换器：新建项目后自动切换并可切回', async ({ page }) => {
+    const switcher = page.locator('#projectSwitcher');
+    const cardTitle = page.locator('.project-card h2');
+    const previousValue = await switcher.inputValue();
+    const previousTitle = (await cardTitle.textContent()) ?? '';
+
+    await page.locator('[data-action="new-project"]').click();
+    // 向导弹窗：标题留空 → 服务端默认「未命名小说」（并行契约用例的项目不会重名）
+    await page.locator('#newProjectTitleInput').fill('');
+    await page.locator('#modalActions button').filter({ hasText: '创建' }).click();
+    await expect(cardTitle, '新建后应自动切换到新项目').toHaveText('未命名小说');
+    await expect(switcher, '切换器应包含新项目').toBeVisible();
+    await expect(switcher.locator('option').filter({ hasText: '未命名小说' })).toHaveCount(1);
+
+    // 按项目 id 切回（标题可能与其他并行项目重名，不能用 label 定位）
+    await switcher.selectOption(previousValue);
+    await expect(cardTitle, '切回后项目卡标题应恢复').toHaveText(previousTitle);
+  });
 });

@@ -430,3 +430,70 @@ test.describe('API 契约 · 导出导入回灌（F078 / T008）', () => {
     expect(bootstrap.project.id).toBe(seedSnapshot.project.id);
   });
 });
+
+test.describe('API 契约 · 多项目上下文（F079 / T011）', () => {
+  test('18 bootstrap 携带项目列表，默认行为与旧请求一致', async ({ request }) => {
+    const data = await (await request.get(`${API_BASE}/api/novel/bootstrap`)).json();
+
+    expect(Array.isArray(data.projects), 'bootstrap 应携带项目列表供切换器使用').toBe(true);
+    expect(data.projects.length).toBeGreaterThanOrEqual(1);
+    // 默认（无 projectId）= id 最小的项目 —— 旧请求零破坏（F079 验收项）
+    expect(data.project.id).toBe(Math.min(...data.projects.map((project) => project.id)));
+    expect(data.projects[0]).toHaveProperty('chapter_count');
+  });
+
+  test('19 ?projectId= 指定项目：数据完全隔离', async ({ request }) => {
+    const tk = token('ctx');
+    const created = await request.post(`${API_BASE}/api/novel/projects`, {
+      data: { title: `F079-${tk}` },
+    });
+    expect(created.status()).toBe(201);
+    const target = (await created.json()).project;
+
+    // 写端点必须尊重 ?projectId=：往新项目里建一章
+    const chapter = await request.post(`${API_BASE}/api/novel/chapters?projectId=${target.id}`, {
+      data: { title: `F079 章-${tk}`, content: '隔离内容' },
+    });
+    expect(chapter.status(), '带 projectId 的写入应落到指定项目').toBe(201);
+
+    // 新项目的 bootstrap：只见自己的章（createProject 自带 1 初始章 + 本用例写入 1 章）
+    const scoped = await (await request.get(`${API_BASE}/api/novel/bootstrap?projectId=${target.id}`)).json();
+    expect(scoped.project.id).toBe(target.id);
+    expect(scoped.chapters.some((c) => c.title === `F079 章-${tk}`), '写入应落到指定项目').toBe(true);
+    expect(scoped.chapters.some((c) => c.title.startsWith('第 1 章')), '初始章应在新项目内').toBe(true);
+
+    // 种子项目（默认 bootstrap）不受影响：新项目的章不得串进来
+    const fallback = await (await request.get(`${API_BASE}/api/novel/bootstrap`)).json();
+    expect(fallback.project.id).not.toBe(target.id);
+    expect(fallback.chapters.some((c) => c.title === `F079 章-${tk}`), '其他项目的章节不得串进默认项目').toBe(false);
+  });
+
+  test('20 X-Project-Id 请求头与查询参数等效', async ({ request }) => {
+    const created = await request.post(`${API_BASE}/api/novel/projects`, {
+      data: { title: `F079-${token('hdr')}` },
+    });
+    const target = (await created.json()).project;
+
+    const byHeader = await request.get(`${API_BASE}/api/novel/bootstrap`, {
+      headers: { 'x-project-id': String(target.id) },
+    });
+    expect(byHeader.status()).toBe(200);
+    expect((await byHeader.json()).project.id).toBe(target.id);
+  });
+
+  test('21 非法 projectId 回落默认，不存在的 projectId 显式 404', async ({ request }) => {
+    // 非数字格式 = 「未表达意图」→ 回落默认项目（设计约定，不算错误）
+    const badFormat = await request.get(`${API_BASE}/api/novel/bootstrap?projectId=abc`);
+    expect(badFormat.status(), '格式非法应回落默认项目而不是报错').toBe(200);
+    expect((await badFormat.json()).project.id).toBe((await (await request.get(`${API_BASE}/api/novel/bootstrap`)).json()).project.id);
+
+    // 不存在 = 「意图指向虚空」→ 404，写端点同样拦截
+    // （静默回落会让用户在错误的项目里继续写稿，比 404 危险得多）
+    const missing = await request.get(`${API_BASE}/api/novel/bootstrap?projectId=999999`);
+    expect(missing.status()).toBe(404);
+    const write = await request.post(`${API_BASE}/api/novel/chapters?projectId=999999`, {
+      data: { title: 'x', content: 'x' },
+    });
+    expect(write.status(), '写入不存在的项目必须被拦截').toBe(404);
+  });
+});

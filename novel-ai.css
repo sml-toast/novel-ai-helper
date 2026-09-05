@@ -166,6 +166,20 @@ button { cursor: pointer; }
 
 .project-card h2 { margin: 10px 0 6px; font-size: 20px; }
 
+/* F079：项目切换器。颜色跟随主题变量，与卡片内的输入框观感一致 */
+.project-switcher {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.project-switcher[hidden] { display: none; }
+
 .project-badge,
 .status-dot,
 .tag {

@@ -403,14 +403,19 @@ function logAudit(action, payload, userId = 1) {
   run('INSERT INTO audit_logs (user_id, action, payload, created_at) VALUES (?, ?, ?, ?)', [userId, action, JSON.stringify(payload), now()]);
 }
 
-function getBootstrapData() {
+function getBootstrapData(projectId = null) {
   const user = get('SELECT * FROM users WHERE username = ?', ['local-author']);
-  const rawProject = get('SELECT * FROM projects WHERE user_id = ? ORDER BY id LIMIT 1', [user.id]);
+  // F079：projectId 为空时保持旧行为（取 id 最小的项目），零破坏；指定时取该项目
+  const rawProject = projectId
+    ? get('SELECT * FROM projects WHERE user_id = ? AND id = ?', [user.id, projectId])
+    : get('SELECT * FROM projects WHERE user_id = ? ORDER BY id LIMIT 1', [user.id]);
+  if (!rawProject) throw new Error('PROJECT_NOT_FOUND');
   // F075：project 一律走 sanitizeProject，响应体里不留 cipher/salt/明文
   const project = { ...sanitizeProject(rawProject), ...getProjectKeyMeta(rawProject.id) };
   return {
     user,
     project,
+    projects: listProjects(),
     chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY id', [project.id]),
     knowledge: {
       global: all("SELECT * FROM knowledge_entries WHERE scope = 'global' ORDER BY id"),
@@ -420,6 +425,24 @@ function getBootstrapData() {
     publishTasks: listPublishTasks(project.id),
     graph: buildGraph(project.id)
   };
+}
+
+/**
+ * 项目切换器数据源（F079）：id/标题/题材/更新时间 + 章节数（子查询计数，
+ * 项目数量是个位数，逐行子查询成本可忽略）。
+ */
+function listProjects() {
+  return all(`
+    SELECT p.id, p.title, p.genre, p.updated_at,
+           (SELECT COUNT(*) FROM chapters c WHERE c.project_id = p.id) AS chapter_count
+    FROM projects p
+    ORDER BY p.id
+  `);
+}
+
+/** 项目存在性校验（F079）：主键查询。不存在 → 调用方返回 404，绝不静默回落。 */
+function projectExists(projectId) {
+  return Boolean(get('SELECT id FROM projects WHERE id = ?', [projectId]));
 }
 
 /**
@@ -1373,4 +1396,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listProjects, projectExists, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };

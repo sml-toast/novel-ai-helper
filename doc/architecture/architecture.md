@@ -71,10 +71,11 @@ graph TB
 | 文件 | 行数 | 职责 | 关键点 |
 |---|---|---|---|
 | `novel-ai.html` | 494 | 工作台页面结构 | 注入 `window.NOVEL_API_PORT`；69 个 `data-action` 触发点 |
-| `novel-ai.js` | 1805 | 前端全部逻辑（单文件 ES module） | 事件委托路由、F076 防丢稿状态机、日志系统、`escapeHtml` 统一转义、F078 导入交互 |
+| `novel-ai.js` | 1904 | 前端全部逻辑（单文件 ES module） | 事件委托路由、F076 防丢稿状态机、F079 项目切换器、日志系统、`escapeHtml` 统一转义、F078 导入交互 |
 | `novel-ai.css` | 839 | 样式与主题 | CSS 变量、明暗主题、响应式侧栏 |
-| `server/novel-api.js` | 457 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；`readJson` 2MB 上限；413/400/500 统一兜底 |
-| `server/novel-db.js` | 1376 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌 |
+| `server/novel-api.js` | 458 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；F079 项目上下文解析；`readJson` 2MB 上限；413/400/500 统一兜底 |
+| `server/novel-project.js` | 27 | 项目上下文解析（F079） | 纯函数：`?projectId=` → `X-Project-Id` 头 → 回落默认；存在性校验在 db 层 |
+| `server/novel-db.js` | 1399 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数 |
 | `server/novel-auth.js` | 72 | 鉴权中间件 | Origin 白名单、写方法集合、`MAX_BODY_BYTES = 2MB` |
 | `server/novel-secret.js` | 179 | 密钥加密 | 主密钥管理、scrypt 派生缓存、AES-256-GCM、掩码 |
 | `server/novel-migrate.js` | 87 | schema 迁移框架 | `MIGRATIONS` 数组（当前 v1）、单事务、失败即启动失败 |
@@ -123,7 +124,7 @@ graph TB
 | 582–630 | 模态框 | Promise 风格 `showModal()`，切章 dirty 确认即用它实现 |
 | 900+ | `runAi()` | 调 `POST /ai`，渲染结果卡片（区分 provider 来源徽章） |
 | 1498+ | `importProjectFile()` | F078 导入交互：文件选择 → 格式预检 → 双模式确认 → `POST /import` → replace 时重载 bootstrap |
-| 1631–1805 | **事件委托** | 唯一的全局 click 监听，按优先级匹配 `data-graph-type` → `data-node-id` → `data-chapter-id` → `data-tab` → `data-open-panel` → `data-publish-id` → `data-version` → … → `data-action`（taskMap 26 项路由到 `runAi`，其余 ~30 个 action 各自分发） |
+| 1730–1904 | **事件委托** | 唯一的全局 click 监听，按优先级匹配 `data-graph-type` → `data-node-id` → `data-chapter-id` → `data-tab` → `data-open-panel` → `data-publish-id` → `data-version` → … → `data-action`（taskMap 26 项路由到 `runAi`，其余 ~30 个 action 各自分发） |
 
 ### 4.1 防丢稿状态机（F076）
 
@@ -148,7 +149,7 @@ stateDiagram-v2
   回滚（`kind='manual'`）才进版本表。这是 X4 实测（自动保存进版本表 → 100 章 318MB）的对策。
 - **并发防抖**：`autoSaving` 标志保证不并发写；保存期间的新输入在成功后排队下一轮，不丢失。
 - **404 特判**：`apiFetch` 带 `error.status`，章节不存在时停止重试而不是永远闪「保存失败」。
-- **切换章节/关闭页面**：`switchChapter()` 经 dirty 确认模态框；`beforeunload` 兜底。
+- **切换章节/项目、关闭页面**：`switchChapter()` 与 `switchProject()` 共用 `confirmDirtyLeave()` 拦截；`beforeunload` 兜底。
 
 ### 4.2 XSS 防线
 
@@ -165,7 +166,8 @@ stateDiagram-v2
 OPTIONS 分流（预检：白名单 204 / 非法 403）
   → authMiddleware          # Origin 白名单；无 Origin（curl/测试）放行
   → res.locals.corsOrigin   # 之后所有 send() 按它回显 ACAO + Vary: Origin，绝不返回 *
-  → getCurrentProjectId()   # 一次主键查询取 projectId；绝不在此时拉全量 bootstrap
+  → resolveProjectId        # F079：?projectId= → X-Project-Id 头 → 默认项目（旧请求零破坏）
+  → projectExists           # 不存在的项目显式 404，绝不静默回落（会让用户在错误项目里写稿）
   → 路由分支（50+ 个 if，/bootstrap、/chapters(POST)、/ai 各自按需取数）
   → catch：PAYLOAD_TOO_LARGE → 413；ImportPayloadError → 400；其余 → 500
 ```
@@ -354,13 +356,13 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | # | 现状 | 影响 | 去向 |
 |---|---|---|---|
 | 1 | `searchAll` 走 LIKE + 固定一条 mock「网络文献」 | 中文召回不稳定；FTS5 索引已建但检索未接入 | T012（FTS5 bigram + 字面后过滤） |
-| 2 | 单项目硬编码：`getBootstrapData()` 固定取 id 最小的项目 | 建了多个项目也无法切换（导入的新项目暂只能在 API 层访问） | T011（`?projectId=` 中间件，实测改动极小；导出端点已先行支持该参数） |
-| 3 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
-| 4 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
-| 5 | 前端单文件持续增长 | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
-| 6 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
-| 7 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
-| 8 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
+| 2 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
+| 3 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
+| 4 | 前端单文件持续增长（1904 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
+| 5 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
+| 6 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
+| 7 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
+| 8 | 实体端点按 id 寻址、未校验所属项目（如 `/chapters/:id/save`） | 单用户本机场景无越权风险；多用户化时必须补项目归属校验 | 保持单机定位；若引入账号体系则随鉴权重构一并处理 |
 
 ---
 
@@ -374,4 +376,4 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 实体识别 | 词典最长匹配 + 首字符索引 + 负例词典 | 无分词库可用；索引版 2.5ms/10 万字；CJK 邻居边界校验被实测否定 |
 | RAG/召回 | 四维加权（提及/关键词/TF-IDF/邻近），无向量 | 零依赖可落地，无需外部 embedding API（Q3 已关闭） |
 | 鉴权 | 本机绑定 + Origin 白名单，无账号体系 | 单机单用户定位；引入账号即推翻整个模型（F095 不排期的根因） |
-| 多项目定位 | 查询参数 `?projectId=`，中间件一次接入 | X2：50 个路由分支仅 2 行真依赖 bootstrap.project，无需逐端点改造 |
+| 多项目定位 | 查询参数 `?projectId=`（主）+ `X-Project-Id` 头（辅），一处解析全端点生效 | X2：50 个路由分支仅 2 行真依赖 bootstrap.project；已落地（T011），前端 apiFetch 统一注入 |
