@@ -289,3 +289,143 @@ test.describe('API 契约 · 迁移框架（T004）', () => {
     expect(res.status()).toBe(200);
   });
 });
+
+test.describe('API 契约 · 导出导入回灌（F078 / T008）', () => {
+  test('14 导出项目：全量数据集合且不携带密钥材料', async ({ request }) => {
+    const res = await request.get(`${API_BASE}/api/novel/export/project`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+
+    // formatVersion 是导入侧拒识旧/新格式的唯一依据；schemaVersion 用于升级排障。
+    expect(data.formatVersion, '导出必须携带格式版本').toBe(1);
+    expect(data.schemaVersion, '导出应记录导出时的 schema 版本').toBeGreaterThanOrEqual(1);
+    expect(typeof data.exportedAt).toBe('string');
+
+    // 历史版本只导 6 块数据，作为逃生通道不完整 —— 现在必须覆盖全部业务表。
+    for (const field of ['chapters', 'chapterVersions', 'characters', 'relations', 'knowledge',
+      'aiTasks', 'aiFeedback', 'publishTasks', 'platforms', 'prompts', 'writingGoals',
+      'writingProgress', 'todos', 'annotations', 'glossary', 'sensitiveRules', 'timeline', 'scenes', 'world']) {
+      expect(Array.isArray(data[field]), `导出应包含 ${field} 集合`).toBe(true);
+    }
+
+    // 种子项目固定 3 章 3 角色 3 关系。章节数只能下界断言 —— 并行的草稿/存稿用例
+    // 会合法地往种子项目里建章；角色/关系没有别的写入方，可以精确断言。
+    expect(data.chapters.length, '种子章节应全部在导出中').toBeGreaterThanOrEqual(3);
+    for (const seedTitle of ['第 10 章 · 黑潮钟声', '第 11 章 · 秘仪学院', '第 12 章 · 钟楼下的背叛']) {
+      expect(data.chapters.some((chapter) => chapter.title === seedTitle), `导出应包含 ${seedTitle}`).toBe(true);
+    }
+    expect(data.chapterVersions.length).toBeGreaterThanOrEqual(3);
+    expect(data.characters).toHaveLength(3);
+    expect(data.relations).toHaveLength(3);
+
+    // 密钥材料永不进导出（F073/F075 的延续）：sanitizeProject 白名单剔除。
+    const projectJson = JSON.stringify(data.project);
+    expect(projectJson, '导出 JSON 不得包含密文列').not.toContain('api_key_cipher');
+    expect(projectJson, '导出 JSON 不得包含盐列').not.toContain('api_key_salt');
+  });
+
+  test('15 导入校验：非导出 JSON / 不认识的格式版本一律 400 且不落库', async ({ request }) => {
+    // 数组不是合法的导出对象
+    const notExport = await request.post(`${API_BASE}/api/novel/import`, { data: [1, 2, 3] });
+    expect(notExport.status(), '非对象载荷应被拒绝').toBe(400);
+    expect((await notExport.json()).error).toContain('项目 JSON');
+
+    // 有格式版本但缺 project 字段
+    const noProject = await request.post(`${API_BASE}/api/novel/import`, {
+      data: { formatVersion: 1 },
+    });
+    expect(noProject.status(), '缺少 project 字段应被拒绝').toBe(400);
+    expect((await noProject.json()).error).toContain('project');
+
+    // 未来格式版本必须显式拒绝而不是猜
+    const futureVersion = await request.post(`${API_BASE}/api/novel/import`, {
+      data: { formatVersion: 99, project: { title: '未来格式' }, chapters: [] },
+    });
+    expect(futureVersion.status()).toBe(400);
+    expect((await futureVersion.json()).error).toContain('格式版本');
+
+    // 拒绝要拒绝得干净：服务必须仍然健康（不留下半截导入状态）。
+    const alive = await request.get(`${API_BASE}/api/novel/bootstrap`);
+    expect(alive.status(), '非法导入后服务应保持可用').toBe(200);
+  });
+
+  test('16 导入为新项目：全量重映射 ID，可经 ?projectId= 再次导出比对', async ({ request }) => {
+    const snapshot = await (await request.get(`${API_BASE}/api/novel/export/project`)).json();
+
+    const importRes = await request.post(`${API_BASE}/api/novel/import`, {
+      data: { ...snapshot, mode: 'new' },
+    });
+    expect(importRes.status()).toBe(201);
+    const result = await importRes.json();
+
+    expect(result.mode).toBe('new');
+    expect(result.projectId, '导入必须生成新项目，绝不复用现有项目 id').toBeGreaterThan(1);
+    expect(result.backupPath, '导入前必须留下整库备份').toContain('backups');
+    expect(result.summary.chapters).toBe(snapshot.chapters.length);
+
+    // ?projectId= 是 F078 为导出加的参数：没有它，新导入的项目无法验证也无法再导出。
+    const roundTripRes = await request.get(`${API_BASE}/api/novel/export/project?projectId=${result.projectId}`);
+    expect(roundTripRes.status()).toBe(200);
+    const roundTrip = await roundTripRes.json();
+    expect(roundTrip.project.id).toBe(result.projectId);
+    expect(roundTrip.project.title).toBe(snapshot.project.title);
+
+    // ID 已重映射，但内容逐项一致（章节按导出顺序对比）。
+    expect(roundTrip.chapters).toHaveLength(snapshot.chapters.length);
+    roundTrip.chapters.forEach((chapter, index) => {
+      expect(chapter.title).toBe(snapshot.chapters[index].title);
+      expect(chapter.content).toBe(snapshot.chapters[index].content);
+      expect(chapter.version, '章节版本号应原样保留').toBe(snapshot.chapters[index].version);
+    });
+    expect(roundTrip.chapterVersions).toHaveLength(snapshot.chapterVersions.length);
+    expect(roundTrip.characters).toHaveLength(snapshot.characters.length);
+    expect(roundTrip.relations).toHaveLength(snapshot.relations.length);
+    expect(roundTrip.publishTasks).toHaveLength(snapshot.publishTasks.length);
+
+    // 项目知识全部回灌；global 共享数据「存在即跳过」，不应重复插入。
+    const projectScoped = snapshot.knowledge.filter((entry) => entry.scope === 'project');
+    expect(roundTrip.knowledge.filter((entry) => entry.scope === 'project')).toHaveLength(projectScoped.length);
+  });
+
+  test('17 覆盖模式：目标项目数据被整体替换，其他项目不受影响', async ({ request }) => {
+    const tk = token('import-replace');
+    // 建一个牺牲项目作为覆盖目标 —— 绝不覆盖 bootstrap 项目，
+    // 否则并行 worker 正在往种子里写章节，两边都会 flaky。
+    const created = await request.post(`${API_BASE}/api/novel/projects`, {
+      data: { title: `F078-${tk}` },
+    });
+    expect(created.status()).toBe(201);
+    const target = (await created.json()).project;
+
+    const targetSnapshot = await (await request.get(`${API_BASE}/api/novel/export/project?projectId=${target.id}`)).json();
+    expect(targetSnapshot.chapters, '新建项目自带 1 章（createProject 的初始章节）').toHaveLength(1);
+
+    const seedSnapshot = await (await request.get(`${API_BASE}/api/novel/export/project`)).json();
+
+    const importRes = await request.post(`${API_BASE}/api/novel/import`, {
+      data: { ...seedSnapshot, mode: 'replace', projectId: target.id },
+    });
+    expect(importRes.status()).toBe(201);
+    const result = await importRes.json();
+    expect(result.mode).toBe('replace');
+    expect(result.projectId, '覆盖模式必须保持项目 id 不变').toBe(target.id);
+
+    const replaced = await (await request.get(`${API_BASE}/api/novel/export/project?projectId=${target.id}`)).json();
+    // 项目行只改内容字段，id 与归属不变；业务子树被来源快照整体替换。
+    expect(replaced.project.id).toBe(target.id);
+    expect(replaced.project.title).toBe(seedSnapshot.project.title);
+    expect(replaced.chapters).toHaveLength(seedSnapshot.chapters.length);
+    replaced.chapters.forEach((chapter, index) => {
+      expect(chapter.title).toBe(seedSnapshot.chapters[index].title);
+      expect(chapter.content).toBe(seedSnapshot.chapters[index].content);
+    });
+    expect(replaced.chapterVersions).toHaveLength(seedSnapshot.chapterVersions.length);
+    expect(replaced.characters).toHaveLength(seedSnapshot.characters.length);
+
+    // 覆盖目标之外的 bootstrap 项目应毫发无损：标题不被改写即为守恒判据
+    // （章节数不能当判据 —— 并行用例会合法地往种子里建章）。
+    const bootstrap = await (await request.get(`${API_BASE}/api/novel/export/project`)).json();
+    expect(bootstrap.project.title).toBe(seedSnapshot.project.title);
+    expect(bootstrap.project.id).toBe(seedSnapshot.project.id);
+  });
+});

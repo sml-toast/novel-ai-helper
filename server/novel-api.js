@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getBootstrapData, getDashboardStats, getProjectKeyMeta, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getBootstrapData, getDashboardStats, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { runAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
@@ -377,7 +377,25 @@ async function handle(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/export/project') {
-      return send(res, 200, exportProject(projectId));
+      // F078：支持 ?projectId= 指定导出目标（导入生成的新项目可据此验证与再次导出）。
+      // 完整的项目归属校验随 F079 多项目中间件统一落地；单用户场景下此处只做存在性校验。
+      const requested = Number(url.searchParams.get('projectId'));
+      const targetId = Number.isInteger(requested) && requested > 0 ? requested : projectId;
+      const data = exportProject(targetId);
+      return data ? send(res, 200, data) : send(res, 404, { error: 'project not found' });
+    }
+
+    // F078 / T008：导入回灌。载荷即 exportProject 的 JSON（前端原样回传并附加 mode）。
+    //   new（默认）—— 重映射 ID 导入为新项目，绝不触碰现有数据；
+    //   replace    —— 覆盖指定（默认当前）项目，导入前自动 VACUUM INTO 整库备份。
+    // 载荷非法走 ImportPayloadError → 400；备份失败或回灌异常 → 500（事务已回滚，库无半截状态）。
+    if (req.method === 'POST' && url.pathname === '/api/novel/import') {
+      const body = await readJson(req);
+      const result = importProject(body, {
+        mode: body.mode === 'replace' ? 'replace' : 'new',
+        targetProjectId: Number(body.projectId) || null
+      });
+      return send(res, 201, result);
     }
 
     if (req.method === 'GET' && url.pathname.match(/^\/api\/novel\/export\/chapters\/\d+$/)) {
@@ -412,6 +430,11 @@ async function handle(req, res) {
       send(res, 413, { error: `request body exceeds ${MAX_BODY_BYTES} bytes` });
       req.destroy(); // 响应已发出，丢弃剩余请求体并断开
       return;
+    }
+    // F078：导入载荷问题属调用方错误，映射为 400 而非 500 ——
+    // 否则用户会把「文件不对」误读成「服务器坏了」。
+    if (error.name === 'ImportPayloadError') {
+      return send(res, 400, { error: error.message });
     }
     return send(res, 500, { error: error.message });
   }

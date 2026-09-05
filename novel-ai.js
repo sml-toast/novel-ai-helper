@@ -1489,6 +1489,61 @@ async function exportChapterFile() {
   }
 }
 
+/**
+ * F078 导入回灌：选择导出 JSON → 预检格式 → 用户选择模式 → POST /import。
+ *   replace：覆盖当前项目（服务端会先做整库 VACUUM INTO 备份，结果里带回备份路径）；
+ *   new    ：导入为新项目，不影响现有数据（多项目切换上线前，新项目暂不能在界面直接打开）。
+ * 动态创建 file input 而不是常驻 DOM：导入是低频操作，没必要给每个页面实例挂一个隐藏控件。
+ */
+async function importProjectFile() {
+  if (!apiOnline) return flashAssist('项目导入', 'API 未启动，无法导入项目。', 'warning');
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      return flashAssist('项目导入失败', '文件不是合法的 JSON。', 'danger');
+    }
+    // 与服务端 assertImportPayload 同源的预检：把明显不对的文件挡在弹窗之前，
+    // 避免用户在确认对话框里做了一次无意义的选择。
+    if (!payload || payload.formatVersion !== 1 || typeof payload.project !== 'object' || !payload.project) {
+      return flashAssist('项目导入失败', '文件不是本工具导出的项目 JSON（缺少 formatVersion=1 或 project 字段）。', 'danger');
+    }
+    const choice = await showModal({
+      title: '导入项目',
+      bodyHtml: `<p>将导入《${escapeHtml(payload.project.title || '未命名项目')}》（导出于 ${escapeHtml(payload.exportedAt || '未知时间')}）。</p>
+        <p>「覆盖当前项目」会先自动备份数据库再替换数据；「导入为新项目」不影响现有项目。</p>`,
+      actions: [
+        { label: '覆盖当前项目', value: 'replace', variant: 'primary-btn' },
+        { label: '导入为新项目', value: 'new' },
+        { label: '取消', value: 'cancel' }
+      ]
+    });
+    if (choice === 'cancel') return;
+    try {
+      const result = await apiFetch('/import', {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, mode: choice, projectId: state.project ? state.project.id : null })
+      });
+      const counts = Object.entries(result.summary || {})
+        .filter(([, count]) => count > 0)
+        .map(([name, count]) => `${name} ${count}`)
+        .join('、');
+      const modeLabel = result.mode === 'replace' ? '已覆盖当前项目' : '已导入为新项目（多项目切换上线前暂不能在界面直接打开）';
+      flashAssist('项目导入完成', `${modeLabel}。写入：${counts || '无数据'}。备份：${result.backupPath}`);
+      if (choice === 'replace') await loadBootstrap();
+    } catch (error) {
+      flashAssist('项目导入失败', error.message, 'danger');
+    }
+  });
+  input.click();
+}
+
 function downloadFile(filename, content, type) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -1687,6 +1742,7 @@ document.addEventListener('click', event => {
   if (action === 'bulk-knowledge') return bulkKnowledge();
   if (action === 'export-project') return exportProjectFile();
   if (action === 'export-chapter') return exportChapterFile();
+  if (action === 'import-project') return importProjectFile();
   if (action === 'save-goal') return saveGoal();
   if (action === 'add-progress') return addProgress();
   if (action === 'archive-chapter') return archiveActiveChapter();

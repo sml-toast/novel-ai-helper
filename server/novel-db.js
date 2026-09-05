@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { migrate } from './novel-migrate.js';
+import { migrate, currentVersion } from './novel-migrate.js';
 import { decryptSecret, encryptSecret, maskSecret } from './novel-secret.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -847,17 +847,414 @@ function exportChapter(chapterId) {
   return { projectTitle: project.title, title: chapter.title, content: chapter.content, version: chapter.version, exportedAt: now() };
 }
 
+/**
+ * 项目导出（F078 / T008）。
+ *
+ * 历史版本只覆盖 6 块数据（缺版本、批注、待办、术语、时间线、场景、世界观、目标等），
+ * 作为「唯一内建的数据逃生通道」不完整。现在覆盖除 users / audit_logs 外的全部业务表：
+ *   - users  ：单用户由首次启动 seed 重建，导出无意义；
+ *   - audit_logs：运营噪音而非稿件资产，导入也不会回灌。
+ * 密钥材料（api_key_cipher/salt）经 sanitizeProject 白名单剔除，导出 JSON 永不携带。
+ *
+ * @returns {object|null} 导出快照；项目不存在返回 null
+ */
 function exportProject(projectId) {
   const project = get('SELECT * FROM projects WHERE id = ?', [projectId]);
+  if (!project) return null;
   return {
+    formatVersion: 1,
+    schemaVersion: currentVersion(db),
     exportedAt: now(),
-    project: sanitizeProject(project),   // 导出 JSON 同样不能带出加密材料
+    project: sanitizeProject(project),
     chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY id', [projectId]),
+    chapterVersions: all(
+      'SELECT cv.* FROM chapter_versions cv JOIN chapters c ON c.id = cv.chapter_id WHERE c.project_id = ? ORDER BY cv.id',
+      [projectId]
+    ),
+    characters: all('SELECT * FROM characters WHERE project_id = ? ORDER BY id', [projectId]),
     relations: all('SELECT * FROM character_relations WHERE project_id = ? ORDER BY id', [projectId]),
     knowledge: all('SELECT * FROM knowledge_entries WHERE scope = ? OR project_id = ? ORDER BY id', ['global', projectId]),
+    aiTasks: all('SELECT id, project_id, chapter_id, task_type, input, output, provider, created_at FROM ai_tasks WHERE project_id = ? ORDER BY id', [projectId]),
+    aiFeedback: all(
+      'SELECT f.* FROM ai_feedback f JOIN ai_tasks t ON t.id = f.task_id WHERE t.project_id = ? ORDER BY f.id',
+      [projectId]
+    ),
+    publishTasks: all('SELECT * FROM publish_tasks WHERE project_id = ? ORDER BY id', [projectId]),
+    platforms: listPlatformConfigs(projectId),
     prompts: listPromptTemplates(projectId),
-    platforms: listPlatformConfigs(projectId)
+    writingGoals: all('SELECT * FROM writing_goals WHERE project_id = ?', [projectId]),
+    writingProgress: all('SELECT * FROM writing_progress WHERE project_id = ? ORDER BY id', [projectId]),
+    todos: listTodos(projectId),
+    annotations: all(
+      'SELECT a.* FROM chapter_annotations a JOIN chapters c ON c.id = a.chapter_id WHERE c.project_id = ? ORDER BY a.id',
+      [projectId]
+    ),
+    glossary: listGlossary(projectId),
+    sensitiveRules: all('SELECT * FROM sensitive_rules WHERE project_id = ? OR project_id IS NULL ORDER BY id', [projectId]),
+    timeline: listTimeline(projectId),
+    scenes: listScenes(projectId),
+    world: listWorldSettings(projectId)
   };
+}
+
+/** 导出格式版本：结构不兼容变更时递增，导入按此拒绝旧格式。 */
+export const IMPORT_FORMAT_VERSION = 1;
+
+/**
+ * 导入载荷非法。API 层按 error.name 映射为 400（其余异常仍是 500）。
+ */
+export class ImportPayloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ImportPayloadError';
+  }
+}
+
+/**
+ * 导入前对整库做文件级备份（F078 / R5）。
+ * 用 `VACUUM INTO` 生成压缩快照：单条 SQL、零依赖，且必须在事务外执行 ——
+ * 因此本函数必须在 importProject 的 BEGIN 之前调用；备份失败 = 中止导入。
+ */
+function backupDatabase() {
+  const backupDir = join(dirname(dbPath), 'backups');
+  mkdirSync(backupDir, { recursive: true });
+  // VACUUM INTO 的目标文件必须不存在；时间戳 + 随机后缀保证幂等重试不冲突
+  const stamp = now().replace(/[:.]/g, '-');
+  const target = join(backupDir, `pre-import-${stamp}-${Math.random().toString(36).slice(2, 8)}.sqlite`);
+  db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  return target;
+}
+
+/**
+ * 校验导入载荷，非法直接抛 ImportPayloadError。
+ * 宽进严出的边界：字段缺失按空集合处理（向后兼容更早的 6 块导出），
+ * 但「根本不是导出 JSON」「格式版本不认识」必须拒绝。
+ */
+function assertImportPayload(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new ImportPayloadError('导入内容必须是本工具导出的项目 JSON 对象');
+  }
+  if (payload.formatVersion !== IMPORT_FORMAT_VERSION) {
+    throw new ImportPayloadError(`不支持的导出格式版本：${payload.formatVersion ?? '缺失'}（当前支持 v${IMPORT_FORMAT_VERSION}，请先用当前版本重新导出）`);
+  }
+  if (!payload.project || typeof payload.project !== 'object') {
+    throw new ImportPayloadError('导出 JSON 缺少 project 字段');
+  }
+  const arrayFields = ['chapters', 'chapterVersions', 'characters', 'relations', 'knowledge', 'aiTasks', 'aiFeedback',
+    'publishTasks', 'platforms', 'prompts', 'writingGoals', 'writingProgress', 'todos', 'annotations',
+    'glossary', 'sensitiveRules', 'timeline', 'scenes', 'world'];
+  for (const field of arrayFields) {
+    if (payload[field] !== undefined && !Array.isArray(payload[field])) {
+      throw new ImportPayloadError(`导出 JSON 字段 ${field} 应为数组`);
+    }
+  }
+}
+
+/**
+ * 删除项目的全部业务子树（F078 replace 模式）。
+ * 外键顺序必须是「先子后父」，否则 foreign_keys=ON 下会直接报错中断：
+ *   ai_feedback → ai_tasks → chapter_annotations / chapter_versions / publish_tasks → chapters → 其余
+ * global 共享数据（global 知识/提示词/敏感词）刻意不删，导入侧用「存在即跳过」去重。
+ */
+function deleteProjectSubtree(projectId) {
+  run('DELETE FROM ai_feedback WHERE task_id IN (SELECT id FROM ai_tasks WHERE project_id = ?)', [projectId]);
+  run('DELETE FROM ai_tasks WHERE project_id = ?', [projectId]);
+  run('DELETE FROM chapter_annotations WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
+  run('DELETE FROM chapter_versions WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
+  run('DELETE FROM publish_tasks WHERE project_id = ?', [projectId]);
+  run('DELETE FROM chapters WHERE project_id = ?', [projectId]);
+  run('DELETE FROM writing_goals WHERE project_id = ?', [projectId]);
+  run('DELETE FROM writing_progress WHERE project_id = ?', [projectId]);
+  run('DELETE FROM creative_todos WHERE project_id = ?', [projectId]);
+  run('DELETE FROM glossary_terms WHERE project_id = ?', [projectId]);
+  run('DELETE FROM characters WHERE project_id = ?', [projectId]);
+  run('DELETE FROM character_relations WHERE project_id = ?', [projectId]);
+  run('DELETE FROM timeline_events WHERE project_id = ?', [projectId]);
+  run('DELETE FROM scene_locations WHERE project_id = ?', [projectId]);
+  run('DELETE FROM world_settings WHERE project_id = ?', [projectId]);
+  run('DELETE FROM platform_configs WHERE project_id = ?', [projectId]);
+  run('DELETE FROM prompt_templates WHERE project_id = ?', [projectId]);
+  run('DELETE FROM sensitive_rules WHERE project_id = ?', [projectId]);
+  const scoped = all("SELECT id FROM knowledge_entries WHERE scope = 'project' AND project_id = ?", [projectId]);
+  for (const row of scoped) run('DELETE FROM knowledge_fts WHERE rowid = ?', [row.id]);
+  run("DELETE FROM knowledge_entries WHERE scope = 'project' AND project_id = ?", [projectId]);
+  logAudit('project.import.replace', { projectId });
+}
+
+/**
+ * 导入回灌（F078 / T008）。两种模式：
+ *   new（默认）—— 全量重映射 ID 导入为新项目，绝不触碰现有数据；
+ *   replace    —— 清空目标项目的业务子树后回灌，项目 id 与账号归属保持不变。
+ *
+ * 安全链路：载荷校验（400）→ 整库 VACUUM INTO 备份（失败即中止）→ 单事务回灌（失败整体回滚）。
+ * 全程外键顺序与 deleteProjectSubtree 相反（先父后子）；global 共享数据「存在即跳过」避免重复。
+ *
+ * @param {object} payload exportProject 的返回值（前端原样回传 + mode/projectId 字段）
+ * @param {{mode?: 'new'|'replace', targetProjectId?: number|null}} options
+ * @returns {{mode:string, projectId:number, backupPath:string, summary:Record<string,number>}}
+ */
+function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
+  assertImportPayload(payload);
+  if (mode !== 'new' && mode !== 'replace') {
+    throw new ImportPayloadError(`不支持的导入模式：${mode}`);
+  }
+  const backupPath = backupDatabase();
+  const data = payload;
+  const ts = now();
+  const summary = {};
+
+  db.exec('BEGIN');
+  try {
+    let projectId;
+    if (mode === 'replace') {
+      projectId = Number(targetProjectId) || get('SELECT id FROM projects ORDER BY id LIMIT 1').id;
+      if (!get('SELECT id FROM projects WHERE id = ?', [projectId])) {
+        throw new ImportPayloadError(`覆盖目标项目不存在：${projectId}`);
+      }
+      deleteProjectSubtree(projectId);
+      run(
+        `UPDATE projects SET title = ?, genre = ?, world_view = ?, target_platform = ?, writing_style = ?,
+         ai_base_url = ?, ai_model = ?, updated_at = ? WHERE id = ?`,
+        [String(data.project.title || '导入项目'), String(data.project.genre || '类型待定'),
+          String(data.project.world_view || ''), String(data.project.target_platform || ''),
+          String(data.project.writing_style || ''), String(data.project.ai_base_url || ''),
+          String(data.project.ai_model || 'mock-novel-copilot'), ts, projectId]
+      );
+    } else {
+      const user = get('SELECT id FROM users WHERE username = ?', ['local-author']);
+      const result = run(
+        `INSERT INTO projects (user_id, title, genre, world_view, target_platform, writing_style, ai_base_url, ai_model, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [user.id, String(data.project.title || '导入项目'), String(data.project.genre || '类型待定'),
+          String(data.project.world_view || ''), String(data.project.target_platform || ''),
+          String(data.project.writing_style || ''), String(data.project.ai_base_url || ''),
+          String(data.project.ai_model || 'mock-novel-copilot'), ts, ts]
+      );
+      projectId = Number(result.lastInsertRowid);
+      logAudit('project.import.new', { projectId, title: data.project.title });
+    }
+
+    // ── 章节 + 版本（先父后子，保留 version 号与时间戳）──
+    const chapterMap = new Map();
+    for (const c of data.chapters || []) {
+      const result = run(
+        `INSERT INTO chapters (project_id, title, content, status, scheduled_at, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, String(c.title ?? '未命名章节'), String(c.content ?? ''), String(c.status ?? ''),
+          c.scheduled_at ?? null, Number(c.version) || 1, c.created_at || ts, c.updated_at || ts]
+      );
+      chapterMap.set(Number(c.id), Number(result.lastInsertRowid));
+    }
+    summary.chapters = chapterMap.size;
+
+    let versionCount = 0;
+    for (const v of data.chapterVersions || []) {
+      const chapterId = chapterMap.get(Number(v.chapter_id));
+      if (!chapterId) continue;
+      run(
+        `INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [chapterId, String(v.content ?? ''), Number(v.version) || 1, v.kind || 'auto', v.name || '', v.created_at || ts]
+      );
+      versionCount += 1;
+    }
+    summary.chapterVersions = versionCount;
+
+    // ── 人物与关系 ──
+    for (const ch of data.characters || []) {
+      run('INSERT INTO characters (project_id, name, role, motivation, arc) VALUES (?, ?, ?, ?, ?)',
+        [projectId, String(ch.name ?? '未命名角色'), String(ch.role ?? ''), String(ch.motivation ?? ''), String(ch.arc ?? '')]);
+    }
+    summary.characters = (data.characters || []).length;
+
+    for (const r of data.relations || []) {
+      run(
+        `INSERT INTO character_relations (project_id, source_name, target_name, relation_type, description, strength)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(r.source_name ?? '角色 A'), String(r.target_name ?? '角色 B'),
+          String(r.relation_type ?? '待设计'), String(r.description ?? ''), Number(r.strength) || 50]
+      );
+    }
+    summary.relations = (data.relations || []).length;
+
+    // ── 知识（global 共享数据存在即跳过；project 知识插入并同步 FTS）──
+    let knowledgeCount = 0;
+    for (const k of data.knowledge || []) {
+      const scope = k.scope === 'global' ? 'global' : 'project';
+      const title = String(k.title ?? '未命名知识');
+      const body = String(k.body ?? '');
+      const source = String(k.source ?? '');
+      if (scope === 'global' && get("SELECT id FROM knowledge_entries WHERE scope = 'global' AND title = ?", [title])) {
+        continue;
+      }
+      const result = run(
+        `INSERT INTO knowledge_entries (project_id, scope, title, body, source, tags, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [scope === 'global' ? null : projectId, scope, title, body, source,
+          typeof k.tags === 'string' ? k.tags : JSON.stringify(k.tags || []), k.created_at || ts, k.updated_at || ts]
+      );
+      run('INSERT INTO knowledge_fts(rowid, title, body, source) VALUES (?, ?, ?, ?)', [Number(result.lastInsertRowid), title, body, source]);
+      knowledgeCount += 1;
+    }
+    summary.knowledge = knowledgeCount;
+
+    // ── AI 任务与反馈（task_id 重映射）──
+    const taskMap = new Map();
+    for (const t of data.aiTasks || []) {
+      const chapterId = t.chapter_id ? chapterMap.get(Number(t.chapter_id)) ?? null : null;
+      const result = run(
+        `INSERT INTO ai_tasks (project_id, chapter_id, task_type, input, output, provider, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, chapterId, String(t.task_type ?? 'sync'), String(t.input ?? '{}'), String(t.output ?? '[]'),
+          String(t.provider ?? 'mock'), t.created_at || ts]
+      );
+      taskMap.set(Number(t.id), Number(result.lastInsertRowid));
+    }
+    let feedbackCount = 0;
+    for (const f of data.aiFeedback || []) {
+      const taskId = taskMap.get(Number(f.task_id));
+      if (!taskId) continue;
+      run('INSERT INTO ai_feedback (task_id, rating, note, created_at) VALUES (?, ?, ?, ?)',
+        [taskId, Number(f.rating) || 5, String(f.note ?? ''), f.created_at || ts]);
+      feedbackCount += 1;
+    }
+    summary.aiTasks = taskMap.size;
+    summary.aiFeedback = feedbackCount;
+
+    // ── 发布任务（chapter_id 重映射）──
+    let publishCount = 0;
+    for (const p of data.publishTasks || []) {
+      const chapterId = chapterMap.get(Number(p.chapter_id));
+      if (!chapterId) continue;
+      run(
+        `INSERT INTO publish_tasks (project_id, chapter_id, platform, scheduled_at, status, retry_count, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, chapterId, String(p.platform ?? ''), p.scheduled_at ?? null, String(p.status ?? 'waiting'),
+          Number(p.retry_count) || 0, String(p.last_error ?? ''), p.created_at || ts, p.updated_at || ts]
+      );
+      publishCount += 1;
+    }
+    summary.publishTasks = publishCount;
+
+    // ── 平台 / 提示词（global 提示词存在即跳过）──
+    for (const p of data.platforms || []) {
+      run(
+        `INSERT INTO platform_configs (project_id, platform, account_name, rules, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, String(p.platform ?? ''), String(p.account_name ?? ''), String(p.rules ?? ''),
+          String(p.status ?? 'enabled'), p.created_at || ts, p.updated_at || ts]
+      );
+    }
+    summary.platforms = (data.platforms || []).length;
+
+    let promptCount = 0;
+    for (const p of data.prompts || []) {
+      const isGlobal = p.project_id == null;
+      if (isGlobal && get('SELECT id FROM prompt_templates WHERE project_id IS NULL AND task_type = ? AND title = ?', [p.task_type, p.title])) {
+        continue;
+      }
+      run(
+        `INSERT INTO prompt_templates (project_id, task_type, title, template, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [isGlobal ? null : projectId, String(p.task_type ?? 'sync'), String(p.title ?? '自定义 Prompt'),
+          String(p.template ?? ''), p.created_at || ts, p.updated_at || ts]
+      );
+      promptCount += 1;
+    }
+    summary.prompts = promptCount;
+
+    // ── 目标 / 进度 / 待办 / 术语 / 时间线 / 场景 / 世界观 / 敏感词 ──
+    for (const g of data.writingGoals || []) {
+      run(
+        `INSERT INTO writing_goals (project_id, daily_words, deadline, note, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, Number(g.daily_words) || 3000, String(g.deadline || ''), String(g.note ?? ''), g.created_at || ts, g.updated_at || ts]
+      );
+    }
+    summary.writingGoals = (data.writingGoals || []).length;
+
+    for (const p of data.writingProgress || []) {
+      run('INSERT INTO writing_progress (project_id, progress_date, words, note, created_at) VALUES (?, ?, ?, ?, ?)',
+        [projectId, String(p.progress_date || ts.slice(0, 10)), Number(p.words) || 0, String(p.note ?? ''), p.created_at || ts]);
+    }
+    summary.writingProgress = (data.writingProgress || []).length;
+
+    for (const t of data.todos || []) {
+      run(
+        `INSERT INTO creative_todos (project_id, title, status, due_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(t.title ?? '未命名待办'), String(t.status ?? 'open'), t.due_at ?? null, t.created_at || ts, t.updated_at || ts]
+      );
+    }
+    summary.todos = (data.todos || []).length;
+
+    for (const t of data.glossary || []) {
+      run(
+        `INSERT INTO glossary_terms (project_id, term, definition, category, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(t.term ?? '未命名词条'), String(t.definition ?? ''), String(t.category ?? '设定'), t.created_at || ts, t.updated_at || ts]
+      );
+    }
+    summary.glossary = (data.glossary || []).length;
+
+    for (const e of data.timeline || []) {
+      run(
+        `INSERT INTO timeline_events (project_id, event_time, title, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(e.event_time || '未知时间'), String(e.title ?? '未命名事件'), String(e.description ?? ''), e.created_at || ts, e.updated_at || ts]
+      );
+    }
+    summary.timeline = (data.timeline || []).length;
+
+    for (const s of data.scenes || []) {
+      run(
+        `INSERT INTO scene_locations (project_id, name, mood, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(s.name ?? '未命名场景'), String(s.mood ?? ''), String(s.description ?? ''), s.created_at || ts, s.updated_at || ts]
+      );
+    }
+    summary.scenes = (data.scenes || []).length;
+
+    for (const w of data.world || []) {
+      run(
+        `INSERT INTO world_settings (project_id, category, title, content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(w.category ?? '设定'), String(w.title ?? '未命名设定'), String(w.content ?? ''), w.created_at || ts, w.updated_at || ts]
+      );
+    }
+    summary.world = (data.world || []).length;
+
+    let ruleCount = 0;
+    for (const r of data.sensitiveRules || []) {
+      const isGlobal = r.project_id == null;
+      if (isGlobal && get('SELECT id FROM sensitive_rules WHERE project_id IS NULL AND term = ?', [r.term])) {
+        continue;
+      }
+      run(
+        'INSERT INTO sensitive_rules (project_id, term, suggestion, severity, created_at) VALUES (?, ?, ?, ?, ?)',
+        [isGlobal ? null : projectId, String(r.term ?? ''), String(r.suggestion ?? ''), String(r.severity ?? 'warning'), r.created_at || ts]
+      );
+      ruleCount += 1;
+    }
+    summary.sensitiveRules = ruleCount;
+
+    // ── 批注（chapter_id 重映射）──
+    let annotationCount = 0;
+    for (const a of data.annotations || []) {
+      const chapterId = chapterMap.get(Number(a.chapter_id));
+      if (!chapterId) continue;
+      run('INSERT INTO chapter_annotations (chapter_id, quote, note, severity, created_at) VALUES (?, ?, ?, ?, ?)',
+        [chapterId, String(a.quote ?? ''), String(a.note ?? ''), String(a.severity ?? 'info'), a.created_at || ts]);
+      annotationCount += 1;
+    }
+    summary.annotations = annotationCount;
+
+    db.exec('COMMIT');
+    logAudit('project.import.done', { projectId, mode, backupPath });
+    return { mode, projectId, backupPath, summary };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 function searchAll(projectId, query) {
@@ -935,4 +1332,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getDashboardStats, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getDashboardStats, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
