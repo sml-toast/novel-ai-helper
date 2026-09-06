@@ -1689,13 +1689,24 @@ async function saveDraft() {
 async function searchKnowledge() {
   const query = document.querySelector('#knowledgeSearch').value.trim();
   if (!apiOnline) {
-    flashAssist('历史与文献搜索', 'API 未启动，已模拟召回：黑潮设定、星火徽章、角色弧光、平台规则。');
+    flashAssist('知识库搜索', 'API 未启动，已模拟召回：黑潮设定、星火徽章、角色弧光、平台规则。');
     return;
   }
   try {
+    // F088：FTS5 bigram 粗筛 + 字面后过滤，覆盖知识/章节/角色/时间线/场景/世界观/术语
     const result = await apiFetch(`/search?q=${encodeURIComponent(query)}`);
     renderKnowledge({ global: result.knowledge.filter(item => item.scope === 'global'), project: result.knowledge.filter(item => item.scope === 'project') });
-    flashAssist('历史与文献搜索', `召回知识 ${result.knowledge.length} 条、历史章节 ${result.chapters.length} 条、网络文献 ${result.network.length} 条。`);
+    // 只列出命中的实体类型，空类型不出现在提示里
+    const counts = [
+      `知识 ${result.knowledge.length}`,
+      `章节 ${result.chapters.length}`,
+      `角色 ${result.characters.length}`,
+      `时间线 ${result.timeline.length}`,
+      `场景 ${result.scenes.length}`,
+      `世界观 ${result.world.length}`,
+      `术语 ${result.glossary.length}`
+    ].filter(text => !text.endsWith(' 0'));
+    flashAssist('知识库搜索', counts.length ? `命中：${counts.join('、')}` : '没有命中任何内容，换个关键词试试。');
   } catch (error) {
     flashAssist('搜索失败', error.message, 'danger');
   }

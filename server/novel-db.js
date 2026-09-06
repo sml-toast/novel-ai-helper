@@ -53,6 +53,44 @@ function safeJsonParse(str) {
   try { return JSON.parse(str); } catch { return str; }
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * 中文全文检索（F088 / T012，实测依据：design 文档 A 节）
+ *
+ * 默认 unicode61 分词器把整段连续中文当成一个 token，2 字词召回 3/10；
+ * bigram 手工切分 10/10（稀有词在 150 万字下比 LIKE 快 166x）。
+ * trigram 更差（2 字词无法成 3-gram，6/10），**不要改用 trigram**。
+ *
+ * bigram 的代价是子串误召（搜「黑潮」会命中「黑潮生」），必须配合
+ * searchAll 里的字面后过滤 —— FTS 粗筛出候选，回原表 LIKE 精确校验。
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** 相邻字符两两成 token；单字符原样保留（FTS5 单 token 仍可命中）。 */
+function bigram(text) {
+  const chars = Array.from(String(text || ''));
+  if (chars.length <= 1) return chars.join('');
+  const grams = [];
+  for (let i = 0; i < chars.length - 1; i += 1) grams.push(chars[i] + chars[i + 1]);
+  return grams.join(' ');
+}
+
+/** 查询词 → FTS5 MATCH 表达式。逐 token 加引号防 FTS5 语法字符注入；空查询返回 null。 */
+function ftsMatchExpression(query) {
+  const tokens = bigram(String(query || '')).split(' ').filter(Boolean);
+  if (!tokens.length) return null;
+  return tokens.map(token => `"${token.replace(/"/g, '')}"`).join(' ');
+}
+
+/**
+ * 统一检索索引的写入端：先删后插，保证幂等。
+ * textParts 为空（如空正文）时删除索引行 —— 不索引空内容。
+ */
+function syncSearchFts(entityType, entityId, textParts) {
+  run('DELETE FROM search_fts WHERE entity_type = ? AND entity_id = ?', [entityType, entityId]);
+  const text = (textParts || []).filter(Boolean).join('\n');
+  const indexed = bigram(text);
+  if (indexed) run('INSERT INTO search_fts(text, entity_type, entity_id) VALUES (?, ?, ?)', [indexed, entityType, entityId]);
+}
+
 function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -295,7 +333,7 @@ function initDb() {
       FOREIGN KEY (project_id) REFERENCES projects(id)
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(title, body, source, content='knowledge_entries', content_rowid='id');
+    CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(text, entity_type UNINDEXED, entity_id UNINDEXED);
   `);
 
   const user = get('SELECT id FROM users WHERE username = ?', ['local-author']);
@@ -395,7 +433,7 @@ function addKnowledgeEntry({ projectId, scope, title, body, source, tags = [] })
     [projectId, scope, title, body, source, JSON.stringify(tags), timestamp, timestamp]
   );
   const id = Number(result.lastInsertRowid);
-  run('INSERT INTO knowledge_fts(rowid, title, body, source) VALUES (?, ?, ?, ?)', [id, title, body, source]);
+  syncSearchFts('knowledge', id, [title, body, source]);
   return id;
 }
 
@@ -515,6 +553,7 @@ function createChapter({ projectId, title, content }) {
   );
   const chapterId = Number(result.lastInsertRowid);
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'auto', '初始版本', ?)", [chapterId, content, 1, timestamp]);
+  syncSearchFts('chapter', chapterId, [title, content]);
   logAudit('chapter.create', { projectId, chapterId, title });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -531,7 +570,9 @@ function saveDraft(chapterId, content) {
   if (!chapter) return null;
   const timestamp = now();
   run('UPDATE chapters SET content = ?, updated_at = ? WHERE id = ?', [content, timestamp, chapterId]);
-  // 刻意不写 chapter_versions、不写审计日志 —— 否则高频自动保存会撑爆两张表
+  // 刻意不写 chapter_versions、不写审计日志 —— 否则高频自动保存会撑爆两张表。
+  // 检索索引要同步：它只是 0.4ms 级的索引行替换，不属于「历史」，不违背上面的原则
+  syncSearchFts('chapter', chapterId, [chapter.title, content]);
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
 
@@ -543,6 +584,7 @@ function saveChapter(chapterId, content) {
   run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?', [content, version, '已存稿 · 待校验', timestamp, chapterId]);
   // kind='manual'：手动存稿才进版本表（kind/name 由 v1 迁移新增）
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', '', ?)", [chapterId, content, version, timestamp]);
+  syncSearchFts('chapter', chapterId, [chapter.title, content]);
   logAudit('chapter.save', { chapterId, version });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -566,6 +608,7 @@ function rollbackChapter(chapterId, version) {
   const timestamp = now();
   run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?', [target.content, nextVersion, '已回滚 · 待校验', timestamp, chapterId]);
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', ?, ?)", [chapterId, target.content, nextVersion, `回滚自 v${version}`, timestamp]);
+  syncSearchFts('chapter', chapterId, [chapter.title, target.content]);
   logAudit('chapter.rollback', { chapterId, fromVersion: version, nextVersion });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -579,7 +622,7 @@ function addKnowledge({ projectId, scope, title, body, source, tags }) {
 function deleteKnowledge(id) {
   const entry = get('SELECT * FROM knowledge_entries WHERE id = ?', [id]);
   if (!entry) return null;
-  run('DELETE FROM knowledge_fts WHERE rowid = ?', [id]);
+  run('DELETE FROM search_fts WHERE entity_type = ? AND entity_id = ?', ['knowledge', id]);
   run('DELETE FROM knowledge_entries WHERE id = ?', [id]);
   logAudit('knowledge.delete', { id, title: entry.title });
   return entry;
@@ -597,6 +640,7 @@ function addRelation({ projectId, sourceName, targetName, relationType, descript
 
 function addCharacterProfile({ projectId, name, role, motivation, arc }) {
   const result = run('INSERT INTO characters (project_id, name, role, motivation, arc) VALUES (?, ?, ?, ?, ?)', [projectId, name, role, motivation, arc]);
+  syncSearchFts('character', Number(result.lastInsertRowid), [name, role, motivation, arc]);
   logAudit('character.add', { projectId, name });
   return get('SELECT * FROM characters WHERE id = ?', [Number(result.lastInsertRowid)]);
 }
@@ -608,6 +652,7 @@ function listCharacters(projectId) {
 function addTimelineEvent({ projectId, eventTime, title, description }) {
   const timestamp = now();
   const result = run('INSERT INTO timeline_events (project_id, event_time, title, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [projectId, eventTime, title, description, timestamp, timestamp]);
+  syncSearchFts('timeline', Number(result.lastInsertRowid), [title, description]);
   logAudit('timeline.add', { projectId, title });
   return get('SELECT * FROM timeline_events WHERE id = ?', [Number(result.lastInsertRowid)]);
 }
@@ -619,6 +664,7 @@ function listTimeline(projectId) {
 function addSceneLocation({ projectId, name, mood, description }) {
   const timestamp = now();
   const result = run('INSERT INTO scene_locations (project_id, name, mood, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [projectId, name, mood, description, timestamp, timestamp]);
+  syncSearchFts('scene', Number(result.lastInsertRowid), [name, mood, description]);
   logAudit('scene.add', { projectId, name });
   return get('SELECT * FROM scene_locations WHERE id = ?', [Number(result.lastInsertRowid)]);
 }
@@ -630,6 +676,7 @@ function listScenes(projectId) {
 function addWorldSetting({ projectId, category, title, content }) {
   const timestamp = now();
   const result = run('INSERT INTO world_settings (project_id, category, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [projectId, category, title, content, timestamp, timestamp]);
+  syncSearchFts('world', Number(result.lastInsertRowid), [title, content]);
   logAudit('world.add', { projectId, title });
   return get('SELECT * FROM world_settings WHERE id = ?', [Number(result.lastInsertRowid)]);
 }
@@ -748,6 +795,7 @@ function toggleTodo(id) {
 function addGlossaryTerm({ projectId, term, definition, category }) {
   const timestamp = now();
   const result = run('INSERT INTO glossary_terms (project_id, term, definition, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [projectId, term, definition, category, timestamp, timestamp]);
+  syncSearchFts('glossary', Number(result.lastInsertRowid), [term, definition]);
   logAudit('glossary.add', { projectId, term });
   return get('SELECT * FROM glossary_terms WHERE id = ?', [Number(result.lastInsertRowid)]);
 }
@@ -1015,6 +1063,23 @@ function assertImportPayload(payload) {
 function deleteProjectSubtree(projectId) {
   run('DELETE FROM ai_feedback WHERE task_id IN (SELECT id FROM ai_tasks WHERE project_id = ?)', [projectId]);
   run('DELETE FROM ai_tasks WHERE project_id = ?', [projectId]);
+  // 检索索引随实体一并清理（F088）：按 project 归属批量删
+  run(`DELETE FROM search_fts WHERE rowid IN (
+        SELECT f.rowid FROM search_fts f
+        JOIN chapters c ON f.entity_type = 'chapter' AND f.entity_id = c.id
+        WHERE c.project_id = ?)`, [projectId]);
+  // 检索索引随实体一并清理（F088）：章节按归属表联删，其余按 project_id 批删
+  run(`DELETE FROM search_fts WHERE entity_type = 'chapter' AND entity_id IN (SELECT id FROM chapters WHERE project_id = ?)`, [projectId]);
+  for (const [type, table] of Object.entries({
+    character: 'characters',
+    timeline: 'timeline_events',
+    scene: 'scene_locations',
+    world: 'world_settings',
+    glossary: 'glossary_terms'
+  })) {
+    run(`DELETE FROM search_fts WHERE entity_type = ? AND entity_id IN (SELECT id FROM ${table} WHERE project_id = ?)`, [type, projectId]);
+  }
+  run(`DELETE FROM search_fts WHERE entity_type = 'knowledge' AND entity_id IN (SELECT id FROM knowledge_entries WHERE scope = 'project' AND project_id = ?)`, [projectId]);
   run('DELETE FROM chapter_annotations WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
   run('DELETE FROM chapter_versions WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
   run('DELETE FROM publish_tasks WHERE project_id = ?', [projectId]);
@@ -1031,8 +1096,6 @@ function deleteProjectSubtree(projectId) {
   run('DELETE FROM platform_configs WHERE project_id = ?', [projectId]);
   run('DELETE FROM prompt_templates WHERE project_id = ?', [projectId]);
   run('DELETE FROM sensitive_rules WHERE project_id = ?', [projectId]);
-  const scoped = all("SELECT id FROM knowledge_entries WHERE scope = 'project' AND project_id = ?", [projectId]);
-  for (const row of scoped) run('DELETE FROM knowledge_fts WHERE rowid = ?', [row.id]);
   run("DELETE FROM knowledge_entries WHERE scope = 'project' AND project_id = ?", [projectId]);
   logAudit('project.import.replace', { projectId });
 }
@@ -1099,7 +1162,9 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
         [projectId, String(c.title ?? '未命名章节'), String(c.content ?? ''), String(c.status ?? ''),
           c.scheduled_at ?? null, Number(c.version) || 1, c.created_at || ts, c.updated_at || ts]
       );
-      chapterMap.set(Number(c.id), Number(result.lastInsertRowid));
+      const chapterId = Number(result.lastInsertRowid);
+      chapterMap.set(Number(c.id), chapterId);
+      syncSearchFts('chapter', chapterId, [c.title, c.content]);
     }
     summary.chapters = chapterMap.size;
 
@@ -1117,8 +1182,9 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
 
     // ── 人物与关系 ──
     for (const ch of data.characters || []) {
-      run('INSERT INTO characters (project_id, name, role, motivation, arc) VALUES (?, ?, ?, ?, ?)',
+      const result = run('INSERT INTO characters (project_id, name, role, motivation, arc) VALUES (?, ?, ?, ?, ?)',
         [projectId, String(ch.name ?? '未命名角色'), String(ch.role ?? ''), String(ch.motivation ?? ''), String(ch.arc ?? '')]);
+      syncSearchFts('character', Number(result.lastInsertRowid), [ch.name, ch.role, ch.motivation, ch.arc]);
     }
     summary.characters = (data.characters || []).length;
 
@@ -1148,7 +1214,7 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
         [scope === 'global' ? null : projectId, scope, title, body, source,
           typeof k.tags === 'string' ? k.tags : JSON.stringify(k.tags || []), k.created_at || ts, k.updated_at || ts]
       );
-      run('INSERT INTO knowledge_fts(rowid, title, body, source) VALUES (?, ?, ?, ?)', [Number(result.lastInsertRowid), title, body, source]);
+      syncSearchFts('knowledge', Number(result.lastInsertRowid), [title, body, source]);
       knowledgeCount += 1;
     }
     summary.knowledge = knowledgeCount;
@@ -1244,38 +1310,42 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
     summary.todos = (data.todos || []).length;
 
     for (const t of data.glossary || []) {
-      run(
+      const result = run(
         `INSERT INTO glossary_terms (project_id, term, definition, category, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [projectId, String(t.term ?? '未命名词条'), String(t.definition ?? ''), String(t.category ?? '设定'), t.created_at || ts, t.updated_at || ts]
       );
+      syncSearchFts('glossary', Number(result.lastInsertRowid), [t.term, t.definition]);
     }
     summary.glossary = (data.glossary || []).length;
 
     for (const e of data.timeline || []) {
-      run(
+      const result = run(
         `INSERT INTO timeline_events (project_id, event_time, title, description, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [projectId, String(e.event_time || '未知时间'), String(e.title ?? '未命名事件'), String(e.description ?? ''), e.created_at || ts, e.updated_at || ts]
       );
+      syncSearchFts('timeline', Number(result.lastInsertRowid), [e.title, e.description]);
     }
     summary.timeline = (data.timeline || []).length;
 
     for (const s of data.scenes || []) {
-      run(
+      const result = run(
         `INSERT INTO scene_locations (project_id, name, mood, description, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [projectId, String(s.name ?? '未命名场景'), String(s.mood ?? ''), String(s.description ?? ''), s.created_at || ts, s.updated_at || ts]
       );
+      syncSearchFts('scene', Number(result.lastInsertRowid), [s.name, s.mood, s.description]);
     }
     summary.scenes = (data.scenes || []).length;
 
     for (const w of data.world || []) {
-      run(
+      const result = run(
         `INSERT INTO world_settings (project_id, category, title, content, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
         [projectId, String(w.category ?? '设定'), String(w.title ?? '未命名设定'), String(w.content ?? ''), w.created_at || ts, w.updated_at || ts]
       );
+      syncSearchFts('world', Number(result.lastInsertRowid), [w.title, w.content]);
     }
     summary.world = (data.world || []).length;
 
@@ -1313,25 +1383,81 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
   }
 }
 
+/**
+ * 全库检索（F088 / T012）：FTS5 bigram 粗筛 → 字面后过滤 → 项目隔离。
+ *
+ * 为什么两段式：bigram 用召回换精确（搜「黑潮」必中「黑潮生」），FTS 只出候选 rowid，
+ * 回原表 LIKE 精确校验才算命中。项目隔离在后过滤 SQL 里完成（global 知识全项目可见）。
+ * 章节结果刻意不回传 content（单章可达数千字，列表页只需要定位信息）。
+ */
 function searchAll(projectId, query) {
-  const keyword = `%${query}%`;
-  const knowledgeRows = all(
-    `SELECT ke.* FROM knowledge_entries ke
-     WHERE (ke.scope = 'global' OR ke.project_id = ?) AND (ke.title LIKE ? OR ke.body LIKE ? OR ke.source LIKE ?)
-     ORDER BY ke.scope, ke.id`,
-    [projectId, keyword, keyword, keyword]
+  const keyword = String(query || '').trim();
+  logAudit('search.query', { projectId, query: keyword });
+  const empty = { query: keyword, knowledge: [], chapters: [], characters: [], timeline: [], scenes: [], world: [], glossary: [] };
+  const match = ftsMatchExpression(keyword);
+  if (!match) return empty;
+
+  const candidates = all(
+    `SELECT entity_type, entity_id FROM search_fts WHERE search_fts MATCH ? LIMIT 400`,
+    [match]
   );
-  const chapterRows = all(
-    `SELECT id, title, content, status FROM chapters
-     WHERE project_id = ? AND (title LIKE ? OR content LIKE ?)
-     ORDER BY id`,
-    [projectId, keyword, keyword]
-  );
-  const networkRows = [
-    { title: `网络文献：${query || '蒸汽都市'} 资料索引`, body: '模拟网络文献搜索结果，真实实现时由可替换 provider 返回标题、摘要、URL 与引用时间。', source: 'mock-web-search' }
-  ];
-  logAudit('search.query', { projectId, query });
-  return { knowledge: knowledgeRows, chapters: chapterRows, network: networkRows };
+  if (!candidates.length) return empty;
+
+  const idsByType = {};
+  for (const row of candidates) {
+    (idsByType[row.entity_type] ??= []).push(row.entity_id);
+  }
+  // 单类型上限：LIKE 后过滤在 100 个主键 IN 内进行，不会失控
+  const ids = (type) => (idsByType[type] || []).slice(0, 100);
+  const like = `%${keyword}%`;
+  const queryIn = (type) => `id IN (${ids(type).join(',')})`;
+
+  // 后过滤 + 项目隔离。knowledge 的 global 条目全项目可见（与 bootstrap 语义一致）
+  const knowledge = ids('knowledge').length
+    ? all(`SELECT * FROM knowledge_entries
+           WHERE ${queryIn('knowledge')}
+             AND (scope = 'global' OR project_id = ?)
+             AND (title LIKE ? OR body LIKE ? OR source LIKE ?)
+           ORDER BY scope, id`, [projectId, like, like, like])
+    : [];
+  const chapters = ids('chapter').length
+    ? all(`SELECT id, title, status, updated_at FROM chapters
+           WHERE ${queryIn('chapter')}
+             AND project_id = ? AND (title LIKE ? OR content LIKE ?)
+           ORDER BY id`, [projectId, like, like])
+    : [];
+  const characters = ids('character').length
+    ? all(`SELECT id, name, role, arc FROM characters
+           WHERE ${queryIn('character')}
+             AND project_id = ? AND (name LIKE ? OR role LIKE ? OR motivation LIKE ? OR arc LIKE ?)
+           ORDER BY id`, [projectId, like, like, like, like])
+    : [];
+  const timeline = ids('timeline').length
+    ? all(`SELECT id, event_time, title, description FROM timeline_events
+           WHERE ${queryIn('timeline')}
+             AND project_id = ? AND (title LIKE ? OR description LIKE ?)
+           ORDER BY id`, [projectId, like, like])
+    : [];
+  const scenes = ids('scene').length
+    ? all(`SELECT id, name, mood, description FROM scene_locations
+           WHERE ${queryIn('scene')}
+             AND project_id = ? AND (name LIKE ? OR mood LIKE ? OR description LIKE ?)
+           ORDER BY id`, [projectId, like, like, like])
+    : [];
+  const world = ids('world').length
+    ? all(`SELECT id, category, title, content FROM world_settings
+           WHERE ${queryIn('world')}
+             AND project_id = ? AND (title LIKE ? OR content LIKE ?)
+           ORDER BY id`, [projectId, like, like])
+    : [];
+  const glossary = ids('glossary').length
+    ? all(`SELECT id, term, definition, category FROM glossary_terms
+           WHERE ${queryIn('glossary')}
+             AND project_id = ? AND (term LIKE ? OR definition LIKE ?)
+           ORDER BY id`, [projectId, like, like])
+    : [];
+
+  return { query: keyword, knowledge, chapters, characters, timeline, scenes, world, glossary };
 }
 
 function buildGraph(projectId, graphType = 'all') {

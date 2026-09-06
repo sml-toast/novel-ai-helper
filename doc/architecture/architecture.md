@@ -75,7 +75,7 @@ graph TB
 | `novel-ai.css` | 839 | 样式与主题 | CSS 变量、明暗主题、响应式侧栏 |
 | `server/novel-api.js` | 458 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；F079 项目上下文解析；`readJson` 2MB 上限；413/400/500 统一兜底 |
 | `server/novel-project.js` | 27 | 项目上下文解析（F079） | 纯函数：`?projectId=` → `X-Project-Id` 头 → 回落默认；存在性校验在 db 层 |
-| `server/novel-db.js` | 1399 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数 |
+| `server/novel-db.js` | 1525 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数、F088 检索索引 |
 | `server/novel-auth.js` | 72 | 鉴权中间件 | Origin 白名单、写方法集合、`MAX_BODY_BYTES = 2MB` |
 | `server/novel-secret.js` | 179 | 密钥加密 | 主密钥管理、scrypt 派生缓存、AES-256-GCM、掩码 |
 | `server/novel-migrate.js` | 87 | schema 迁移框架 | `MIGRATIONS` 数组（当前 v1）、单事务、失败即启动失败 |
@@ -203,7 +203,7 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 实体列表 | `/characters`、`/timeline`、`/scenes`、`/world` | GET/POST | 四类创作实体 |
 | **AI 任务** | `/ai` | POST | 统一入口：taskType + chapterId + selectedText → runAiTask → 落 ai_tasks |
 | | `/ai/history`、`/ai/tasks/:id/feedback` | GET/POST | 历史与评价 |
-| 检索/图谱 | `/search`、`/graph` | GET | LIKE 检索（F088 待升级 FTS5）、知识图谱构建（按 type 过滤） |
+| 检索/图谱 | `/search`、`/graph` | GET | FTS5 bigram 粗筛 + 字面后过滤，七类实体项目隔离检索（F088/T012）；知识图谱构建（按 type 过滤） |
 | 导出/导入 | `/export/project`（支持 `?projectId=`）、`/export/chapters/:id` | GET | 项目 JSON（F078：19 个集合 + formatVersion/schemaVersion，密钥材料剔除）、单章 |
 | | `/import` | POST | 导入回灌：`new`（重映射 ID）默认 / `replace`（覆盖目标项目）；前置 `VACUUM INTO` 整库备份；单事务；载荷非法 → 400 |
 | **发布** | `/publish` | GET/POST | GET 时**顺带执行懒扫描**（到期任务 → 模拟发布）；POST 创建任务 |
@@ -234,7 +234,8 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 用户/项目 | `users`（单用户 local-author）、`projects`（含 `ai_base_url`/`ai_model`/`api_key_cipher`/`api_key_salt`） |
 | 章节 | `chapters`、`chapter_versions`（v1 迁移后含 `kind`：auto/manual，与 `name`） |
 | 人物 | `characters`、`character_relations` |
-| 知识 | `knowledge_entries`（scope: global/project）、`knowledge_fts`（FTS5，content 表外挂） |
+| 知识 | `knowledge_entries`（scope: global/project） |
+| 检索 | `search_fts`（FTS5 虚拟表，F088/T012：全实体统一索引——章节/知识/角色/时间线/场景/世界观/术语，bigram 切分，字面后过滤防「黑潮生」误召） |
 | AI | `ai_tasks`（输入/输出/provider 全留痕）、`ai_feedback`、`prompt_templates` |
 | 发布 | `publish_tasks`（waiting/checking/published/failed + retry_count）、`platform_configs` |
 | 创作 | `timeline_events`、`scene_locations`（世界观地点，≠ M5 的场景卡 `scenes`）、`world_settings`、`glossary_terms` |
@@ -257,9 +258,8 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 - `MIGRATIONS` 数组，version 严格递增，**永不修改已发布的迁移**；新需求一律追加新条目。
 - 每个迁移单事务：`up()` 成功 → `PRAGMA user_version = N` → COMMIT；失败 → ROLLBACK 并**抛异常终止启动**。
 - `safeExec` 容错「duplicate column / already exists」保证幂等；其余错误原样上抛。
-- 当前已应用：**v1**（F075 密钥列 `api_key_cipher/salt` + F086 版本语义列 `kind/name`）、
-  **v2**（17 个外键性能索引——SQLite 的 FOREIGN KEY 不自动建索引，而本项目几乎全部查询按
-  project_id/chapter_id 过滤）。
+- 当前已应用：**v1**（F075 密钥列 + F086 版本语义）、**v2**（17 个外键性能索引）、
+  **v3**（F088 检索索引重建：knowledge_fts → 全实体统一 search_fts，bigram 切分 + 存量回填）。
 - 契约测试 13 用例覆盖「重复启动 user_version 稳定不变」。
 
 ### 6.4 版本语义（F076 × F086 合并设计的落地）
@@ -355,14 +355,13 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 
 | # | 现状 | 影响 | 去向 |
 |---|---|---|---|
-| 1 | `searchAll` 走 LIKE + 固定一条 mock「网络文献」 | 中文召回不稳定；FTS5 索引已建但检索未接入 | T012（FTS5 bigram + 字面后过滤） |
-| 2 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
-| 3 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
-| 4 | 前端单文件持续增长（1904 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
-| 5 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
-| 6 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
-| 7 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
-| 8 | 实体端点按 id 寻址、未校验所属项目（如 `/chapters/:id/save`） | 单用户本机场景无越权风险；多用户化时必须补项目归属校验 | 保持单机定位；若引入账号体系则随鉴权重构一并处理 |
+| 1 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
+| 2 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
+| 3 | 前端单文件持续增长（1915 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
+| 4 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
+| 5 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
+| 6 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
+| 7 | 实体端点按 id 寻址、未校验所属项目（如 `/chapters/:id/save`） | 单用户本机场景无越权风险；多用户化时必须补项目归属校验 | 保持单机定位；若引入账号体系则随鉴权重构一并处理 |
 
 ---
 
@@ -371,7 +370,7 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 决策 | 选择 | 关键理由（详见 design 文档实测节） |
 |---|---|---|
 | 运行时依赖 | Node 内置模块，零第三方 | 单机工具的可移植性；`node:sqlite` + FTS5 + `node:crypto` 实测覆盖全部需求 |
-| 中文检索分词 | FTS5 + bigram 手工切分 + 字面后过滤 | 默认 unicode61 中文召回 3/10；bigram 10/10；trigram 更差（6/10）勿用 |
+| 中文检索分词 | FTS5 + bigram 手工切分 + 字面后过滤 | 默认 unicode61 中文召回 3/10；bigram 10/10；trigram 更差（6/10）勿用。**已落地（T012）**：统一 search_fts 覆盖七类实体；2 字查询是严格子串语义，实体级消歧（黑潮生）归 T013 负例词典 |
 | 版本存储 | 草稿态不进版本表 | X4：否则 100 章 318MB；草稿/版本分离压缩 45x |
 | 实体识别 | 词典最长匹配 + 首字符索引 + 负例词典 | 无分词库可用；索引版 2.5ms/10 万字；CJK 邻居边界校验被实测否定 |
 | RAG/召回 | 四维加权（提及/关键词/TF-IDF/邻近），无向量 | 零依赖可落地，无需外部 embedding API（Q3 已关闭） |

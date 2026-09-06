@@ -60,8 +60,8 @@ test.describe('Novel AI 助手 - 知识库功能测试', () => {
     // 顶部插一张结果卡片。原来那条用例只 fill 不点击、也不断言，等于没测。
     await expect(
       page.locator('#assistFeed .assist-card').first(),
-      '点击搜索后应在辅助区出现「历史与文献搜索」结果卡片'
-    ).toContainText('历史与文献搜索');
+      '点击搜索后应在辅助区出现「知识库搜索」结果卡片'
+    ).toContainText('知识库搜索');
 
     // 搜索结果最终落在两个知识列表容器里，容器必须存在。
     // 「黑潮」只命中项目知识里的《黑潮》词条；写作知识库（global）无匹配 ——

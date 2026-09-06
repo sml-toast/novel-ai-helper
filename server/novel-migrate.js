@@ -75,8 +75,45 @@ export const MIGRATIONS = [
       ];
       for (const sql of indexes) db.exec(sql);
     }
+  },
+  {
+    version: 3,
+    name: 'F088 检索索引重建：knowledge_fts → search_fts（bigram）',
+    up(db) {
+      // 旧 knowledge_fts 是 external-content 表且写入的是明文，unicode61 把整段中文
+      // 当一个 token，2 字词召回 3/10（design 文档 A 节实测）。重建为统一 search_fts：
+      //   - 全实体覆盖（章节/知识/角色/时间线/场景/世界观/术语）
+      //   - 全部按 bigram 切分写入；查询侧配合字面后过滤防「黑潮生」误召
+      db.exec('DROP TABLE IF EXISTS knowledge_fts');
+      db.exec('DROP TABLE IF EXISTS search_fts');
+      db.exec(`CREATE VIRTUAL TABLE search_fts USING fts5(text, entity_type UNINDEXED, entity_id UNINDEXED)`);
+      const insert = db.prepare('INSERT INTO search_fts(text, entity_type, entity_id) VALUES (?, ?, ?)');
+      const toBigram = (text) => {
+        const chars = Array.from(String(text || ''));
+        if (chars.length <= 1) return chars.join('');
+        const grams = [];
+        for (let i = 0; i < chars.length - 1; i += 1) grams.push(chars[i] + chars[i + 1]);
+        return grams.join(' ');
+      };
+      const sources = [
+        ['chapter', "SELECT c.id, c.title, c.content FROM chapters c"],
+        ['knowledge', "SELECT ke.id, ke.title, ke.body, ke.source FROM knowledge_entries ke"],
+        ['character', "SELECT ch.id, ch.name, ch.role, ch.motivation, ch.arc FROM characters ch"],
+        ['timeline', "SELECT te.id, te.title, te.description FROM timeline_events te"],
+        ['scene', "SELECT sl.id, sl.name, sl.mood, sl.description FROM scene_locations sl"],
+        ['world', "SELECT ws.id, ws.title, ws.content FROM world_settings ws"],
+        ['glossary', "SELECT gt.id, gt.term, gt.definition FROM glossary_terms gt"]
+      ];
+      for (const [type, sql] of sources) {
+        for (const row of db.prepare(sql).all()) {
+          const text = Object.values(row).slice(1).filter(Boolean).join('\n');
+          const indexed = toBigram(text);
+          if (indexed) insert.run(indexed, type, row.id);
+        }
+      }
+    }
   }
-  // v3 起由 M5/M6 任务追加：F080 提及表、F084 伏笔表、F083 情节线、F088 FTS5 bigram 重建
+  // v4 起由 M5/M6 任务追加：F080 提及表、F084 伏笔表、F083 情节线
 ];
 
 /** 只读：当前 schema 版本 */

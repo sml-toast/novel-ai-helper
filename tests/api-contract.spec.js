@@ -265,9 +265,9 @@ test.describe('API 契约 · 草稿态与版本态（F076）', () => {
 });
 
 test.describe('API 契约 · 迁移框架（T004）', () => {
-  test('13 迁移幂等：重复启动服务后 user_version 稳定为 2', async ({ request }) => {
-    // v1 = F075 密钥列 + F086 版本语义；v2 = 外键性能索引
-    expect(readUserVersion(), '服务首次启动应已完成 v2 迁移').toBe(2);
+  test('13 迁移幂等：重复启动服务后 user_version 稳定为 3', async ({ request }) => {
+    // v1 = F075 密钥列 + F086 版本语义；v2 = 外键性能索引；v3 = F088 检索索引重建
+    expect(readUserVersion(), '服务首次启动应已完成 v3 迁移').toBe(3);
 
     // 再「启动一次服务」：import novel-db.js 等价于 API 进程启动时的
     // initDb + migrate。若迁移不幂等（例如重复建索引未容错），
@@ -283,7 +283,7 @@ test.describe('API 契约 · 迁移框架（T004）', () => {
     );
     expect(restart.status, `第二次启动不应失败：${restart.stderr || ''}`).toBe(0);
 
-    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(2);
+    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(3);
 
     // 幂等不等于可用：确认在线服务仍然正常响应。
     const res = await request.get(`${API_BASE}/api/novel/bootstrap`);
@@ -495,5 +495,70 @@ test.describe('API 契约 · 多项目上下文（F079 / T011）', () => {
       data: { title: 'x', content: 'x' },
     });
     expect(write.status(), '写入不存在的项目必须被拦截').toBe(404);
+  });
+});
+
+test.describe('API 契约 · 中文检索升级（F088 / T012）', () => {
+  test('22 中文 2 字词可召回：知识、章节、多实体命中', async ({ request }) => {
+    // 种子数据：项目知识《黑潮》、第 12 章正文含「黑潮不是灾难」。
+    // 2 字词「黑潮」必须能召回前两者 —— unicode61 时代召回 3/10，这就是升级的意义
+    const res = await request.get(`${API_BASE}/api/novel/search?q=${encodeURIComponent('黑潮')}`);
+    expect(res.status()).toBe(200);
+    const result = await res.json();
+
+    expect(result.knowledge.some((entry) => entry.title === '黑潮'), '知识条目《黑潮》应命中').toBe(true);
+    expect(result.chapters.some((chapter) => chapter.title === '第 12 章 · 钟楼下的背叛'), '正文含黑潮的章节应命中').toBe(true);
+    expect(result.network, '假网络文献已随 T012 移除').toBeUndefined();
+  });
+
+  test('23 字面后过滤：散落 token 的 FTS 误召必须被剔除', async ({ request }) => {
+    const tk = token('fts');
+    // FTS5 对「青鸾密码」是 AND 语义（青鸾+鸾密+密码 各自出现即命中），
+    // 因此「青鸾鸟的鸾密档案里藏着密码」会进候选 —— 但它不含连续子串
+    // 「青鸾密码」，后过滤必须把它剔掉。这正是两段式检索的意义。
+    const created = await request.post(`${API_BASE}/api/novel/knowledge`, {
+      data: { scope: 'project', title: `散落命中-${tk}`, body: '青鸾鸟的鸾密档案里藏着密码', source: '检索测试', tags: [] },
+    });
+    expect(created.status()).toBe(201);
+
+    const result = await (await request.get(`${API_BASE}/api/novel/search?q=${encodeURIComponent('青鸾密码')}`)).json();
+    expect(result.knowledge.some((entry) => entry.title.startsWith('散落命中')), '散落 token 的候选应被字面后过滤剔除').toBe(false);
+
+    // 连续子串的真实命中不受影响（T024 用例会在章节侧再验一次）
+    expect(result.query).toBe('青鸾密码');
+
+    // 2 字查询是严格子串语义：「黑潮生」包含「黑潮」，会一并命中 ——
+    // 按实体边界排除（负例词典/提及管理）属于 T013，不在检索层做。
+    // 这里只验证全名可召回（后过滤不误杀）：
+    const created2 = await request.post(`${API_BASE}/api/novel/knowledge`, {
+      data: { scope: 'project', title: `黑潮生-${tk}`, body: '港口的老渔民', source: '检索测试', tags: [] },
+    });
+    expect(created2.status()).toBe(201);
+    const fullResult = await (await request.get(`${API_BASE}/api/novel/search?q=${encodeURIComponent('黑潮生')}`)).json();
+    expect(fullResult.knowledge.some((entry) => entry.title.startsWith('黑潮生')), '搜全名应召回').toBe(true);
+  });
+
+  test('24 章节正文与标题检索，且项目隔离', async ({ request }) => {
+    const tk = token('chap-fts');
+    // 「青鸾密码」种子数据不含，命中即为本用例写入（bigram：青鸾 + 鸾密 + 密码 AND 命中）
+    const marker = '青鸾密码';
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `检索章-${tk}`, content: `雾港深处藏着${marker}的线索。` },
+    });
+    expect(created.status()).toBe(201);
+    const chapterId = (await created.json()).chapter.id;
+
+    const byBody = await (await request.get(`${API_BASE}/api/novel/search?q=${encodeURIComponent(marker)}`)).json();
+    expect(byBody.chapters.some((chapter) => chapter.id === chapterId), '正文关键词应命中章节').toBe(true);
+    expect(byBody.chapters[0], '章节结果不回传正文（定位信息即可）').not.toHaveProperty('content');
+
+    const byTitle = await (await request.get(`${API_BASE}/api/novel/search?q=${encodeURIComponent('检索章')}`)).json();
+    expect(byTitle.chapters.some((chapter) => chapter.id === chapterId), '标题应命中章节').toBe(true);
+
+    // 项目隔离：在其他项目里搜同一关键词，不得串出本项目章节
+    const project = await request.post(`${API_BASE}/api/novel/projects`, { data: { title: `F088-${tk}` } });
+    const otherProjectId = (await project.json()).project.id;
+    const scoped = await (await request.get(`${API_BASE}/api/novel/search?projectId=${otherProjectId}&q=${encodeURIComponent(marker)}`)).json();
+    expect(scoped.chapters.some((chapter) => chapter.id === chapterId), '其他项目不得搜到本项目章节').toBe(false);
   });
 });
