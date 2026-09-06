@@ -11,8 +11,10 @@
  *   3. 迁移必须幂等 —— 用 safeExec 跳过「列已存在 / 表已存在」的重复执行
  *   4. 迁移失败 = 启动失败，由调用方决定是否中止进程
  *
- * 零依赖：仅用 node:sqlite 原生能力。
+ * 零依赖：仅用 node:sqlite 原生能力（novel-mentions 为无依赖纯函数模块）。
  */
+
+import { buildMentionScanner } from './novel-mentions.js';
 
 /**
  * ALTER TABLE 对已存在的列会抛 "duplicate column"，CREATE TABLE 对已存在的表会抛
@@ -112,9 +114,75 @@ export const MIGRATIONS = [
         }
       }
     }
+  },
+  {
+    version: 4,
+    name: 'F080 实体提及表 + 别名表（含负例）+ 存量回填',
+    up(db) {
+      // 提及表：一行 = 章节正文中一次实体命中（position 供 UI 定位高亮）
+      db.exec(`CREATE TABLE IF NOT EXISTS entity_mentions (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id  INTEGER NOT NULL,
+        chapter_id  INTEGER NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id   INTEGER NOT NULL,
+        surface     TEXT NOT NULL,
+        position    INTEGER NOT NULL,
+        created_at  TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(id)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_mentions_chapter ON entity_mentions(chapter_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_mentions_entity ON entity_mentions(entity_type, entity_id)');
+
+      // 别名表：正例（alias 是实体的另一种叫法）与负例（polarity=-1，
+      // 遮蔽字符串，如「黑潮生」防止内部「黑潮」误报 —— design E.3）
+      db.exec(`CREATE TABLE IF NOT EXISTS entity_aliases (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id  INTEGER NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id   INTEGER NOT NULL,
+        alias       TEXT NOT NULL,
+        polarity    INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_aliases_entity ON entity_aliases(project_id, entity_type, entity_id)');
+
+      // 存量回填：对全部章节按当前词典（实体主名）重建提及。
+      // 词典在迁移内直接组装（novel-mentions 纯函数，无 SQL 依赖）。
+      const chapters = db.prepare('SELECT id, project_id, content FROM chapters ORDER BY id').all();
+      const dictionaryCache = new Map();
+      const insertMention = db.prepare(
+        'INSERT INTO entity_mentions (project_id, chapter_id, entity_type, entity_id, surface, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      const timestamp = new Date().toISOString();
+      for (const chapter of chapters) {
+        if (!dictionaryCache.has(chapter.project_id)) {
+          dictionaryCache.set(chapter.project_id, buildDictionaryForProject(db, chapter.project_id));
+        }
+        const scan = buildMentionScanner(dictionaryCache.get(chapter.project_id));
+        for (const hit of scan(chapter.content || '')) {
+          insertMention.run(chapter.project_id, chapter.id, hit.entityType, hit.entityId, hit.surface, hit.position, timestamp);
+        }
+      }
+    }
   }
-  // v4 起由 M5/M6 任务追加：F080 提及表、F084 伏笔表、F083 情节线
+  // v5 起由 M5/M6 任务追加：F084 伏笔表、F083 情节线
 ];
+
+/** 迁移内使用的词典组装：实体主名（项目 + global 知识）。与 novel-db.js 的加载语义一致。 */
+function buildDictionaryForProject(db, projectId) {
+  const rows = [];
+  const push = (entityType, entityId, alias) =>
+    rows.push({ entity_type: entityType, entity_id: entityId, alias, polarity: 1 });
+  for (const row of db.prepare('SELECT id, name FROM characters WHERE project_id = ?').all(projectId)) push('character', row.id, row.name);
+  for (const row of db.prepare('SELECT id, title FROM timeline_events WHERE project_id = ?').all(projectId)) push('timeline', row.id, row.title);
+  for (const row of db.prepare('SELECT id, name FROM scene_locations WHERE project_id = ?').all(projectId)) push('scene', row.id, row.name);
+  for (const row of db.prepare('SELECT id, title FROM world_settings WHERE project_id = ?').all(projectId)) push('world', row.id, row.title);
+  for (const row of db.prepare('SELECT id, term FROM glossary_terms WHERE project_id = ?').all(projectId)) push('glossary', row.id, row.term);
+  for (const row of db.prepare("SELECT id, title FROM knowledge_entries WHERE scope = 'global' OR project_id = ?").all(projectId)) push('knowledge', row.id, row.title);
+  return rows;
+}
 
 /** 只读：当前 schema 版本 */
 export function currentVersion(db) {

@@ -655,6 +655,42 @@ button.node { color: var(--text); cursor: pointer; }
   margin: 20px 0;
 }
 
+/* F080：本章提及卡。chips 展示命中的实体与次数，✗ 按钮登记负例别名 */
+.mention-panel { margin: 0 0 14px; }
+
+.mention-panel h3 { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+
+.mention-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.mention-chips .mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  font-size: 12px;
+}
+
+.mention-chips .mention-chip em { font-style: normal; color: var(--muted); }
+
+.mention-chips .mention-chip button {
+  border: 0;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+}
+
+.mention-chips .mention-chip button:hover { color: var(--danger); }
+
+.mention-empty { font-size: 12px; color: var(--muted); }
+
 .search-box input {
   width: 100%;
   padding: 13px 15px;
@@ -665,8 +701,7 @@ button.node { color: var(--text); cursor: pointer; }
   background: rgba(255, 255, 255, 0.06);
 }
 
-.knowledge-columns {
-  display: grid;
+.knowledge-columns {  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }

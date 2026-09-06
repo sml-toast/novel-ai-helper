@@ -265,9 +265,9 @@ test.describe('API 契约 · 草稿态与版本态（F076）', () => {
 });
 
 test.describe('API 契约 · 迁移框架（T004）', () => {
-  test('13 迁移幂等：重复启动服务后 user_version 稳定为 3', async ({ request }) => {
-    // v1 = F075 密钥列 + F086 版本语义；v2 = 外键性能索引；v3 = F088 检索索引重建
-    expect(readUserVersion(), '服务首次启动应已完成 v3 迁移').toBe(3);
+  test('13 迁移幂等：重复启动服务后 user_version 稳定为 4', async ({ request }) => {
+    // v1 密钥列+版本语义；v2 外键索引；v3 检索索引重建；v4 提及/别名表 + 回填
+    expect(readUserVersion(), '服务首次启动应已完成 v4 迁移').toBe(4);
 
     // 再「启动一次服务」：import novel-db.js 等价于 API 进程启动时的
     // initDb + migrate。若迁移不幂等（例如重复建索引未容错），
@@ -283,7 +283,7 @@ test.describe('API 契约 · 迁移框架（T004）', () => {
     );
     expect(restart.status, `第二次启动不应失败：${restart.stderr || ''}`).toBe(0);
 
-    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(3);
+    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(4);
 
     // 幂等不等于可用：确认在线服务仍然正常响应。
     const res = await request.get(`${API_BASE}/api/novel/bootstrap`);
@@ -560,5 +560,91 @@ test.describe('API 契约 · 中文检索升级（F088 / T012）', () => {
     const otherProjectId = (await project.json()).project.id;
     const scoped = await (await request.get(`${API_BASE}/api/novel/search?projectId=${otherProjectId}&q=${encodeURIComponent(marker)}`)).json();
     expect(scoped.chapters.some((chapter) => chapter.id === chapterId), '其他项目不得搜到本项目章节').toBe(false);
+  });
+});
+
+test.describe('API 契约 · 实体提及与反链（F080 / T013）', () => {
+  test('25 章节提及识别：分组、计数与标题解析，草稿保存同步更新', async ({ request }) => {
+    const tk = token('mentions');
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `提及章-${tk}`, content: '林祈把星火徽章按在掌心，想起伊莱娜在秘仪学院的话。林祈沉默了。' },
+    });
+    expect(created.status()).toBe(201);
+    const chapterId = (await created.json()).chapter.id;
+
+    const result = await (await request.get(`${API_BASE}/api/novel/mentions?chapterId=${chapterId}`)).json();
+    const byKey = Object.fromEntries(result.mentions.map((m) => [`${m.entity_type}:${m.title}`, m]));
+
+    expect(byKey['character:林祈'], '角色「林祈」应识别且计数 2').toBeDefined();
+    expect(byKey['character:林祈'].count).toBe(2);
+    expect(byKey['character:伊莱娜'].count).toBe(1);
+    expect(byKey['knowledge:星火徽章'], '知识条目应识别（含标题解析）').toBeDefined();
+    expect(byKey['knowledge:秘仪学院'].count).toBe(1);
+    // design E 节验收：真实种子数据召回无漏报（本用例覆盖 2 角色 + 2 知识条目）
+
+    // 草稿保存（不进版本表）也必须同步提及 —— 否则切章后再看提及就是旧数据
+    await request.post(`${API_BASE}/api/novel/chapters/${chapterId}/draft`, {
+      data: { content: '罗文没有出现。' },
+    });
+    const after = await (await request.get(`${API_BASE}/api/novel/mentions?chapterId=${chapterId}`)).json();
+    expect(after.mentions.some((m) => m.title === '林祈'), '改稿后旧提及应被清除').toBe(false);
+    expect(after.mentions.some((m) => m.title === '罗文' && m.count === 1), '新内容应产生新提及').toBe(true);
+  });
+
+  test('26 负例遮蔽：登记「黑潮生」后重扫，内部「黑潮」不再误报', async ({ request }) => {
+    const tk = token('neg');
+    // design E.3 的对抗场景：黑潮生（渔民）不是黑潮（能量潮）
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `负例章-${tk}`, content: '黑潮生是老渔民。黑潮是归乡。' },
+    });
+    const chapterId = (await created.json()).chapter.id;
+
+    const before = await (await request.get(`${API_BASE}/api/novel/mentions?chapterId=${chapterId}`)).json();
+    const heichao = before.mentions.find((m) => m.title === '黑潮');
+    expect(heichao, '未登记负例时，黑潮生内部的黑潮会被误报').toBeDefined();
+    expect(heichao.count).toBe(2);
+
+    // 一键标负例：登记 → 服务端自动全项目重扫
+    const aliasRes = await request.post(`${API_BASE}/api/novel/aliases`, {
+      data: { entityType: 'knowledge', entityId: heichao.entity_id, alias: '黑潮生', polarity: -1 },
+    });
+    expect(aliasRes.status()).toBe(201);
+    const aliasBody = await aliasRes.json();
+    expect(aliasBody.alias.polarity).toBe(-1);
+    expect(aliasBody.rescan.chapters, '登记后应自动重扫全项目').toBeGreaterThan(0);
+
+    const after = await (await request.get(`${API_BASE}/api/novel/mentions?chapterId=${chapterId}`)).json();
+    const afterHeichao = after.mentions.find((m) => m.title === '黑潮');
+    expect(afterHeichao, '负例遮蔽后仍应保留真命中').toBeDefined();
+    expect(afterHeichao.count, '遮蔽「黑潮生」后只剩「黑潮是归乡」一处').toBe(1);
+    // 幂等：重复登记同一负例不产生重复行
+    const again = await request.post(`${API_BASE}/api/novel/aliases`, {
+      data: { entityType: 'knowledge', entityId: heichao.entity_id, alias: '黑潮生', polarity: -1 },
+    });
+    expect((await again.json()).alias.polarity).toBe(-1);
+    const aliases = await (await request.get(`${API_BASE}/api/novel/aliases?entityType=knowledge&entityId=${heichao.entity_id}`)).json();
+    expect(aliases.aliases.filter((a) => a.alias === '黑潮生'), '同一负例只存一条').toHaveLength(1);
+  });
+
+  test('27 反链按项目隔离：其他项目搜不到本项目的提及', async ({ request }) => {
+    const tk = token('backlink');
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `反链章-${tk}`, content: '伊莱娜把旧船票递给了林祈。' },
+    });
+    const chapterId = (await created.json()).chapter.id;
+
+    const mentions = await (await request.get(`${API_BASE}/api/novel/mentions?chapterId=${chapterId}`)).json();
+    const yilaina = mentions.mentions.find((m) => m.title === '伊莱娜');
+    expect(yilaina, '前置：章节应识别出伊莱娜').toBeDefined();
+
+    const backlinks = await (await request.get(`${API_BASE}/api/novel/mentions/backlink?entityType=character&entityId=${yilaina.entity_id}`)).json();
+    expect(backlinks.chapters.some((chapter) => chapter.id === chapterId), '反链应包含本章').toBe(true);
+    expect(backlinks.chapters.find((chapter) => chapter.id === chapterId).count).toBe(1);
+
+    // 另一个项目的视角：同一实体（种子角色是项目 1 的），在项目 2 下反链为空
+    const project = await request.post(`${API_BASE}/api/novel/projects`, { data: { title: `F080-${tk}` } });
+    const otherId = (await project.json()).project.id;
+    const scoped = await (await request.get(`${API_BASE}/api/novel/mentions/backlink?projectId=${otherId}&entityType=character&entityId=${yilaina.entity_id}`)).json();
+    expect(scoped.chapters, '反链必须按项目隔离').toHaveLength(0);
   });
 });

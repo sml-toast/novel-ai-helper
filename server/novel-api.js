@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, loadProjectSecret, projectExists, recordAiTask, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { resolveProjectId } from './novel-project.js';
 import { runAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
@@ -376,6 +376,48 @@ async function handle(req, res) {
         provider: result.provider
       });
       return send(res, 200, { taskId, ...result });
+    }
+
+    // F080 / T013：提及与反链
+    if (req.method === 'GET' && url.pathname === '/api/novel/mentions' && url.searchParams.get('chapterId')) {
+      return send(res, 200, { mentions: listChapterMentions(Number(url.searchParams.get('chapterId'))) });
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/novel/mentions/backlink' && url.searchParams.get('entityType')) {
+      const entityType = url.searchParams.get('entityType');
+      const entityId = Number(url.searchParams.get('entityId'));
+      return send(res, 200, { chapters: listEntityBacklinks(projectId, entityType, entityId) });
+    }
+
+    // 别名变更后自动全项目重扫，保证「标负例立即生效」
+    if (req.method === 'POST' && url.pathname === '/api/novel/mentions/rescan') {
+      return send(res, 200, rescanProjectMentions(projectId));
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/novel/aliases' && url.searchParams.get('entityType')) {
+      const entityType = url.searchParams.get('entityType');
+      const entityId = Number(url.searchParams.get('entityId'));
+      return send(res, 200, { aliases: listEntityAliases(projectId, entityType, entityId) });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/aliases') {
+      const body = await readJson(req);
+      const alias = addEntityAlias({
+        projectId,
+        entityType: body.entityType,
+        entityId: Number(body.entityId),
+        alias: body.alias,
+        polarity: Number(body.polarity) || 1
+      });
+      return send(res, 201, { alias, rescan: rescanProjectMentions(projectId) });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/aliases/delete') {
+      const body = await readJson(req);
+      const removed = deleteEntityAlias(Number(body.id));
+      return removed
+        ? send(res, 200, { alias: removed, rescan: rescanProjectMentions(projectId) })
+        : send(res, 404, { error: 'alias not found' });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/search') {

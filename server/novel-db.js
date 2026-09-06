@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { migrate, currentVersion } from './novel-migrate.js';
 import { decryptSecret, encryptSecret, maskSecret } from './novel-secret.js';
+import { buildMentionScanner } from './novel-mentions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
@@ -89,6 +90,152 @@ function syncSearchFts(entityType, entityId, textParts) {
   const text = (textParts || []).filter(Boolean).join('\n');
   const indexed = bigram(text);
   if (indexed) run('INSERT INTO search_fts(text, entity_type, entity_id) VALUES (?, ?, ?)', [indexed, entityType, entityId]);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * 实体提及与反链（F080 / T013，算法依据：design 文档 E 节实测）
+ *
+ * 提及 = 章节正文里出现了已登记实体（主名或正例别名）。
+ * 负例（polarity=-1）= 人工登记的遮蔽串（如「黑潮生」），命中即整段跳过；
+ * 剩余误报（「他黑潮化了」这类）无法靠算法消除，由提及管理 UI 人工兜底。
+ * ════════════════════════════════════════════════════════════════════ */
+
+export const MENTION_ENTITY_TYPES = new Set(['character', 'knowledge', 'scene', 'world', 'timeline', 'glossary']);
+
+/** 提及实体的名字列（标题解析与反链展示共用） */
+const MENTION_ENTITY_SOURCES = {
+  character: ['characters', 'name'],
+  knowledge: ['knowledge_entries', 'title'],
+  scene: ['scene_locations', 'name'],
+  world: ['world_settings', 'title'],
+  timeline: ['timeline_events', 'title'],
+  glossary: ['glossary_terms', 'term']
+};
+
+/**
+ * 组装某项目的提及词典：实体主名 + 别名表（正/负例）。
+ * 别名逐条校验实体仍存在（实体被删后别名不产出悬空提及）。
+ */
+function loadMentionDictionary(projectId) {
+  const rows = [];
+  const push = (entityType, entityId, alias, polarity = 1) =>
+    rows.push({ entity_type: entityType, entity_id: entityId, alias, polarity });
+
+  for (const [type, [table, nameColumn]] of Object.entries(MENTION_ENTITY_SOURCES)) {
+    const scoped = type === 'knowledge'
+      ? "scope = 'global' OR project_id = ?"
+      : 'project_id = ?';
+    for (const row of all(`SELECT id, ${nameColumn} AS name FROM ${table} WHERE ${scoped}`, [projectId])) {
+      push(type, row.id, row.name);
+    }
+  }
+  for (const alias of all('SELECT entity_type, entity_id, alias, polarity FROM entity_aliases WHERE project_id = ?', [projectId])) {
+    push(alias.entity_type, alias.entity_id, alias.alias, alias.polarity);
+  }
+  return rows;
+}
+
+/**
+ * 重建一个章节的提及记录（先删后插）。
+ * 词典规模实测无关紧要（首字符索引 2.5ms/10 万字），因此不做跨请求缓存，
+ * 保证别名变更后下一次保存立即生效。草稿保存（3s 防抖）走这里同样无压力。
+ */
+function syncChapterMentions(chapterId) {
+  const chapter = get('SELECT id, project_id, content FROM chapters WHERE id = ?', [chapterId]);
+  if (!chapter) return;
+  const scan = buildMentionScanner(loadMentionDictionary(chapter.project_id));
+  const hits = scan(chapter.content || '');
+  // SAVEPOINT 而非 BEGIN：本函数也会被 importProject 在其事务内调用，
+  // 嵌套 BEGIN 会报错；SAVEPOINT 两种场景都合法。逐条 INSERT 自动提交
+  // 会产生每条一次的 WAL fsync（实测 150 条提及 ≈ 10ms），包起来后一次落盘。
+  db.exec('SAVEPOINT mentions_sync');
+  try {
+    run('DELETE FROM entity_mentions WHERE chapter_id = ?', [chapterId]);
+    const timestamp = now();
+    for (const hit of hits) {
+      run(
+        'INSERT INTO entity_mentions (project_id, chapter_id, entity_type, entity_id, surface, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [chapter.project_id, chapterId, hit.entityType, hit.entityId, hit.surface, hit.position, timestamp]
+      );
+    }
+    db.exec('RELEASE mentions_sync');
+  } catch (error) {
+    db.exec('ROLLBACK TO mentions_sync');
+    db.exec('RELEASE mentions_sync');
+    throw error;
+  }
+  return hits.length;
+}
+
+/** 全项目重扫（别名增删后调用；200 章 × 3KB 实测量级 ≈ 数十毫秒） */
+function rescanProjectMentions(projectId) {
+  const chapters = all('SELECT id FROM chapters WHERE project_id = ?', [projectId]);
+  let mentions = 0;
+  for (const chapter of chapters) {
+    mentions += syncChapterMentions(chapter.id) || 0;
+  }
+  logAudit('mentions.rescan', { projectId, chapters: chapters.length, mentions });
+  return { chapters: chapters.length, mentions };
+}
+
+/** 章节提及（按实体分组 + 标题解析），供「本章提及」卡与 T014 召回使用 */
+function listChapterMentions(chapterId) {
+  const grouped = all(
+    `SELECT entity_type, entity_id, COUNT(*) AS count, MIN(position) AS first_position, MIN(surface) AS surface
+     FROM entity_mentions WHERE chapter_id = ?
+     GROUP BY entity_type, entity_id ORDER BY first_position`,
+    [chapterId]
+  );
+  const titles = {};
+  for (const type of new Set(grouped.map(row => row.entity_type))) {
+    const ids = grouped.filter(row => row.entity_type === type).map(row => row.entity_id);
+    const [table, nameColumn] = MENTION_ENTITY_SOURCES[type];
+    for (const row of all(`SELECT id, ${nameColumn} AS title FROM ${table} WHERE id IN (${ids.join(',')})`)) {
+      titles[`${type}-${row.id}`] = row.title;
+    }
+  }
+  return grouped.map(row => ({ ...row, title: titles[`${row.entity_type}-${row.entity_id}`] || row.surface }));
+}
+
+/** 反链：哪些章节提到了该实体（当前项目范围） */
+function listEntityBacklinks(projectId, entityType, entityId) {
+  return all(
+    `SELECT c.id, c.title, c.status, COUNT(*) AS count
+     FROM entity_mentions m JOIN chapters c ON c.id = m.chapter_id
+     WHERE m.project_id = ? AND m.entity_type = ? AND m.entity_id = ?
+     GROUP BY c.id ORDER BY count DESC, c.id`,
+    [projectId, entityType, entityId]
+  );
+}
+
+function listEntityAliases(projectId, entityType, entityId) {
+  return all(
+    'SELECT id, alias, polarity, created_at FROM entity_aliases WHERE project_id = ? AND entity_type = ? AND entity_id = ? ORDER BY id',
+    [projectId, entityType, entityId]
+  );
+}
+
+function addEntityAlias({ projectId, entityType, entityId, alias, polarity }) {
+  const text = String(alias || '').trim();
+  if (!text) throw new Error('alias is required');
+  if (polarity !== -1 && polarity !== 1) throw new Error('polarity must be 1 or -1');
+  // 幂等：同一实体的同一字符串只存一条（改极性=先删后插）
+  run('DELETE FROM entity_aliases WHERE project_id = ? AND entity_type = ? AND entity_id = ? AND alias = ?',
+    [projectId, entityType, entityId, text]);
+  const result = run(
+    'INSERT INTO entity_aliases (project_id, entity_type, entity_id, alias, polarity, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [projectId, entityType, entityId, text, polarity, now()]
+  );
+  logAudit('alias.add', { projectId, entityType, entityId, alias: text, polarity });
+  return get('SELECT * FROM entity_aliases WHERE id = ?', [Number(result.lastInsertRowid)]);
+}
+
+function deleteEntityAlias(id) {
+  const alias = get('SELECT * FROM entity_aliases WHERE id = ?', [id]);
+  if (!alias) return null;
+  run('DELETE FROM entity_aliases WHERE id = ?', [id]);
+  logAudit('alias.delete', { id, alias: alias.alias });
+  return alias;
 }
 
 function initDb() {
@@ -554,6 +701,7 @@ function createChapter({ projectId, title, content }) {
   const chapterId = Number(result.lastInsertRowid);
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'auto', '初始版本', ?)", [chapterId, content, 1, timestamp]);
   syncSearchFts('chapter', chapterId, [title, content]);
+  syncChapterMentions(chapterId);
   logAudit('chapter.create', { projectId, chapterId, title });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -573,6 +721,7 @@ function saveDraft(chapterId, content) {
   // 刻意不写 chapter_versions、不写审计日志 —— 否则高频自动保存会撑爆两张表。
   // 检索索引要同步：它只是 0.4ms 级的索引行替换，不属于「历史」，不违背上面的原则
   syncSearchFts('chapter', chapterId, [chapter.title, content]);
+  syncChapterMentions(chapterId);
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
 
@@ -585,6 +734,7 @@ function saveChapter(chapterId, content) {
   // kind='manual'：手动存稿才进版本表（kind/name 由 v1 迁移新增）
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', '', ?)", [chapterId, content, version, timestamp]);
   syncSearchFts('chapter', chapterId, [chapter.title, content]);
+  syncChapterMentions(chapterId);
   logAudit('chapter.save', { chapterId, version });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -609,6 +759,7 @@ function rollbackChapter(chapterId, version) {
   run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?', [target.content, nextVersion, '已回滚 · 待校验', timestamp, chapterId]);
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'manual', ?, ?)", [chapterId, target.content, nextVersion, `回滚自 v${version}`, timestamp]);
   syncSearchFts('chapter', chapterId, [chapter.title, target.content]);
+  syncChapterMentions(chapterId);
   logAudit('chapter.rollback', { chapterId, fromVersion: version, nextVersion });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
@@ -623,6 +774,8 @@ function deleteKnowledge(id) {
   const entry = get('SELECT * FROM knowledge_entries WHERE id = ?', [id]);
   if (!entry) return null;
   run('DELETE FROM search_fts WHERE entity_type = ? AND entity_id = ?', ['knowledge', id]);
+  run('DELETE FROM entity_mentions WHERE entity_type = ? AND entity_id = ?', ['knowledge', id]);
+  run('DELETE FROM entity_aliases WHERE entity_type = ? AND entity_id = ?', ['knowledge', id]);
   run('DELETE FROM knowledge_entries WHERE id = ?', [id]);
   logAudit('knowledge.delete', { id, title: entry.title });
   return entry;
@@ -1165,6 +1318,7 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
       const chapterId = Number(result.lastInsertRowid);
       chapterMap.set(Number(c.id), chapterId);
       syncSearchFts('chapter', chapterId, [c.title, c.content]);
+      syncChapterMentions(chapterId);
     }
     summary.chapters = chapterMap.size;
 
@@ -1522,4 +1676,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listProjects, projectExists, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteEntityAlias, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
