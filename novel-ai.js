@@ -966,6 +966,13 @@ async function runAi(taskType) {
       method: 'POST',
       body: JSON.stringify({ taskType, chapterId: activeChapter.id, selectedText: editor.value.slice(0, 1200) })
     });
+    // F081：引用来源卡 —— 让作者看见「AI 看到了什么」（召回实体 + 相关度 + 截断信息）
+    if (result.refs && result.refs.length) {
+      const refsText = result.refs.map(ref => `${ref.title}（${ref.score}·${ref.reason}）`).join('；');
+      const meta = result.tokenEstimate ? `｜本次 prompt 约 ${result.tokenEstimate} tokens` : '';
+      const cut = result.truncated ? `｜正文已从 ${result.truncated.original} 字截断至 ${result.truncated.kept} 字` : '';
+      flashAssist('引用来源（AI 看到了什么）', `${refsText}${meta}${cut}`);
+    }
     result.items.reverse().forEach(item => flashAssist(item.title, item.body, item.tone));
   } catch (error) {
     flashAssist('AI 接口错误', error.message, 'danger');

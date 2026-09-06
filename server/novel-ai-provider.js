@@ -110,18 +110,99 @@ const taskTemplates = {
   ]
 };
 
-function buildPrompt({ taskType, project, chapter, context }) {
+/* ════════════════════════════════════════════════════════════════════
+ * 分层 prompt（F081 / T014，结构依据 design 文档 §2.5.2）
+ *
+ * 旧实现把「全文正文 + JSON.stringify(整个上下文)」一次性灌进去：
+ * prompt 随知识库与正文长度线性膨胀，绝大部分是噪声。
+ * 新结构：L1 项目设定 → L2 前情记忆 → L3 召回 Top-K → L4 截断正文 → L5 任务。
+ * 零 token 预估依赖：中文按 1.5 字符/token、其余按 4 字符/token 估算（§2.5.2）。
+ * ════════════════════════════════════════════════════════════════════ */
+
+const BODY_LIMIT = { head: 800, middle: 600, tail: 400, total: 1800 };
+
+/**
+ * 正文三段截断：章首保持开篇语境，中段优先取作者选区附近（光标位置的
+ * 最佳代理，F087 修复后 selectedText 是真实选区），章尾保持最新进展。
+ * 截断信息随响应回传（truncated），UI 必须让作者知道「AI 没看到全文」。
+ */
+function truncateBody(content, selectedText) {
+  const text = String(content || '');
+  if (text.length <= BODY_LIMIT.total) return { text, truncated: null };
+
+  const head = text.slice(0, BODY_LIMIT.head);
+  const tail = text.slice(-BODY_LIMIT.tail);
+  let middle;
+  const selectedIdx = selectedText ? text.indexOf(selectedText) : -1;
+  if (selectedIdx >= 0) {
+    const start = Math.max(BODY_LIMIT.head, Math.min(selectedIdx - 200, text.length - BODY_LIMIT.tail - BODY_LIMIT.middle));
+    middle = text.slice(start, start + BODY_LIMIT.middle);
+  } else {
+    middle = text.slice(BODY_LIMIT.head, BODY_LIMIT.head + BODY_LIMIT.middle);
+  }
+  return {
+    text: `[章首] ${head}\n……（中段有截断）……\n${middle}\n……（中段有截断）……\n[章尾] ${tail}`,
+    truncated: {
+      original: text.length,
+      kept: head.length + middle.length + tail.length,
+      strategy: `head-${BODY_LIMIT.head} + middle-${BODY_LIMIT.middle} + tail-${BODY_LIMIT.tail}`
+    }
+  };
+}
+
+/** 零依赖 token 估算：中文 ≈1.5 字符/token，其余 ≈4 字符/token */
+function estimateTokens(text) {
+  const input = String(text || '');
+  const cjk = (input.match(/[\u4e00-\u9fff]/g) || []).length;
+  return Math.ceil(cjk / 1.5 + (input.length - cjk) / 4);
+}
+
+const RECALL_TYPE_LABELS = {
+  character: '角色',
+  knowledge: '知识',
+  scene: '场景',
+  world: '世界观',
+  timeline: '时间线',
+  glossary: '术语'
+};
+
+function buildPrompt({ taskType, project, chapter, context, recall = [], memory = null }) {
   const template = context?.promptTemplate?.template || '';
-  return [
-    `你是小说 AI 助手，任务类型：${taskType}`,
-    template ? `任务模板：${template}` : '',
-    `项目：${project.title}，题材：${project.genre}，风格：${project.writing_style}`,
-    `世界观：${project.world_view}`,
-    `当前章节：${chapter?.title || '未选择章节'}`,
-    `正文：${chapter?.content || ''}`,
-    `上下文：${JSON.stringify(context || {})}`,
-    '请输出结构化建议，避免替作者直接写完整章节。'
-  ].filter(Boolean).join('\n');
+  // 注意解构：truncated 是「截断元数据」{original,kept,strategy}；
+  // truncateBody 返回的 {text, truncated} 里 text 进 prompt，truncated 才回传给响应
+  const { text: bodyText, truncated } = truncateBody(chapter?.content, context?.selectedText);
+
+  const lines = [
+    // L1 项目设定层（常驻，很短）
+    `【项目】${project.title}｜${project.genre}｜风格：${project.writing_style}`,
+    `【世界观】${project.world_view}`,
+    template ? `【任务模板】${template}` : ''
+  ];
+
+  // L2 记忆层：上一章尾部摘录（章节摘要落库前的过渡方案，F086 后可升级为摘要）
+  if (memory) {
+    lines.push(`【前情】上一章《${memory.title}》末尾：${memory.tail}`);
+  }
+
+  // L3 召回层：按相关度排序的实体/设定（让 AI 保持一致性，也让作者可审计）
+  if (recall.length) {
+    lines.push('【召回的相关实体与设定】（按相关度排序）');
+    for (const item of recall) {
+      lines.push(`- [${RECALL_TYPE_LABELS[item.entityType] || item.entityType}] ${item.title}：${item.reason}`);
+    }
+  }
+
+  // L4 正文层（截断已标注）+ 作者选区
+  lines.push(`【本章】${chapter?.title || '未选择章节'}`);
+  lines.push(`【正文】${bodyText}`);
+  if (context?.selectedText) {
+    lines.push(`【作者选区】${context.selectedText}`);
+  }
+
+  // L5 任务层
+  lines.push(`【任务】${taskType}。请输出结构化建议（JSON 数组，每项含 title/body/tone），避免替作者直接写完整章节。`);
+
+  return { prompt: lines.filter(Boolean).join('\n'), truncated };
 }
 
 /**
@@ -198,15 +279,19 @@ const MOCK_NOTICE = {
  *               绝不静默降级成 mock —— 否则用户会以为 AI 正常工作。
  * @returns {Promise<{provider:string, prompt:string, items:Array}>}
  */
-async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null }) {
-  const prompt = buildPrompt({ taskType, project, chapter, context });
+async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null, recall = [], memory = null }) {
+  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory });
+  const tokenEstimate = estimateTokens(prompt);
 
   // 解密失败优先于一切：这是可修复的配置故障，必须让用户看见
   if (apiKeyError) {
     return {
       provider: 'secret-error',
       prompt,
-      items: [{ title: 'AI 密钥不可用', body: apiKeyError, tone: 'danger' }]
+      items: [{ title: 'AI 密钥不可用', body: apiKeyError, tone: 'danger' }],
+      refs: recall.map(toRef),
+      truncated,
+      tokenEstimate
     };
   }
 
@@ -220,15 +305,26 @@ async function runAiTask({ taskType, project, chapter, context, apiKey = '', api
     return {
       provider: providerResult.provider,
       prompt,
-      items: providerResult.items.map(item => Array.isArray(item) ? { title: item[0], body: item[1], tone: item[2] || '' } : item)
+      items: providerResult.items.map(item => Array.isArray(item) ? { title: item[0], body: item[1], tone: item[2] || '' } : item),
+      refs: recall.map(toRef),
+      truncated,
+      tokenEstimate
     };
   }
 
   return {
     provider: 'mock',
     prompt,
-    items: [MOCK_NOTICE, ...(taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))]
+    items: [MOCK_NOTICE, ...(taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))],
+    refs: recall.map(toRef),
+    truncated,
+    tokenEstimate
   };
+}
+
+/** 召回条目 → 引用清单（让作者看见 AI 看到了什么，F081 验收项） */
+function toRef(item) {
+  return { type: item.entityType, title: item.title, score: item.score, reason: item.reason };
 }
 
 export { runAiTask };

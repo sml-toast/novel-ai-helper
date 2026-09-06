@@ -75,8 +75,9 @@ graph TB
 | `novel-ai.css` | 839 | 样式与主题 | CSS 变量、明暗主题、响应式侧栏 |
 | `server/novel-api.js` | 458 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；F079 项目上下文解析；`readJson` 2MB 上限；413/400/500 统一兜底 |
 | `server/novel-project.js` | 27 | 项目上下文解析（F079） | 纯函数：`?projectId=` → `X-Project-Id` 头 → 回落默认；存在性校验在 db 层 |
-| `server/novel-db.js` | 1679 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数、F088 检索索引、F080 提及/别名 |
+| `server/novel-db.js` | 1749 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数、F088 检索索引、F080 提及/别名、F081 召回取数 |
 | `server/novel-mentions.js` | 71 | 提及扫描器（F080） | 纯函数：首字符索引最长匹配、负例优先遮蔽；词典组装在 db 层 |
+| `server/novel-recall.js` | 143 | 按需召回打分（F081） | 纯函数：四维加权（提及 0.40/关键词 0.25/TF-IDF 0.20/邻近 0.15），零向量零外部 API |
 | `server/novel-auth.js` | 72 | 鉴权中间件 | Origin 白名单、写方法集合、`MAX_BODY_BYTES = 2MB` |
 | `server/novel-secret.js` | 179 | 密钥加密 | 主密钥管理、scrypt 派生缓存、AES-256-GCM、掩码 |
 | `server/novel-migrate.js` | 87 | schema 迁移框架 | `MIGRATIONS` 数组（当前 v1）、单事务、失败即启动失败 |
@@ -202,7 +203,7 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | **知识库** | `/knowledge`、`/knowledge/bulk`、`/knowledge/:id/delete` | POST | 单条/按行批量/删除（同步维护 FTS 索引） |
 | 关系 | `/relations` | POST | 人物关系 |
 | 实体列表 | `/characters`、`/timeline`、`/scenes`、`/world` | GET/POST | 四类创作实体 |
-| **AI 任务** | `/ai` | POST | 统一入口：taskType + chapterId + selectedText → runAiTask → 落 ai_tasks |
+| **AI 任务** | `/ai` | POST | 统一入口：taskType + chapterId + selectedText → 按需召回 + 分层 prompt → runAiTask（响应含 refs/truncated/tokenEstimate）→ 落 ai_tasks |
 | | `/ai/history`、`/ai/tasks/:id/feedback` | GET/POST | 历史与评价 |
 | 检索/图谱 | `/search`、`/graph` | GET | FTS5 bigram 粗筛 + 字面后过滤，七类实体项目隔离检索（F088/T012）；知识图谱构建（按 type 过滤） |
 | **提及/反链** | `/mentions?chapterId=`、`/mentions/backlink?entityType&entityId` | GET | 本章提及（按实体分组计数、标题解析）、实体反链（哪些章节提到它，项目隔离，F080/T013） |
@@ -320,6 +321,12 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 
 - **26 种任务类型**：前端 `taskMap` → `POST /ai { taskType, chapterId, selectedText }` → `runAiTask()`。
   服务端内置 26 组中文 mock 模板（`taskTemplates`），保证零配置可演示。
+- **分层 prompt（F081/T014 已落地）**：L1 项目设定 → L2 前情记忆（上一章尾部摘录，F086 摘要落库后可升级）
+  → L3 召回 Top-K（四维加权：提及 0.40/关键词 0.25/TF-IDF 0.20/邻近 0.15，打分在 `novel-recall.js`）
+  → L4 正文三段截断（章首 800 + 选区附近 600 + 章尾 400，截断信息回传）
+  → L5 任务层。**实测（30 章 + 3 知识场景）：prompt 2332 → 866 字符，缩短 63%**（验收线 ≥50%）。
+  响应携带 `refs`（引用清单：类型/标题/分数/理由）、`truncated`、`tokenEstimate`，前端以「引用来源」卡展示。
+  与设计的偏差：keywordScore 用 bigram 包含度（非 FTS BM25）、IDF 在候选集内统计——零依赖取舍，见 `novel-recall.js` 文件头。
 - **调用外部模型**：OpenAI 兼容 `/chat/completions`，Bearer 认证，60s `AbortController` 超时。
   baseUrl/model 取值优先级：环境变量 → 项目库字段。
 - **provider 四态**（落库到 `ai_tasks.provider`，前端据此显示徽章）：
@@ -361,7 +368,7 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 |---|---|---|---|
 | 1 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
 | 2 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
-| 3 | 前端单文件持续增长（2003 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
+| 3 | 前端单文件持续增长（2010 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
 | 4 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
 | 5 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
 | 6 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
@@ -378,6 +385,6 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 实体识别 | 词典最长匹配 + 首字符索引 + 负例遮蔽 | 索引版 2.5ms/10 万字（朴素实现慢 130 倍）；CJK 邻居边界校验被实测否定；**已落地（T013）**，剩余误报（「他黑潮化了」）由提及 UI 人工标负例兜底 |
 | 版本存储 | 草稿态不进版本表 | X4：否则 100 章 318MB；草稿/版本分离压缩 45x |
 | 实体识别 | 词典最长匹配 + 首字符索引 + 负例词典 | 无分词库可用；索引版 2.5ms/10 万字；CJK 邻居边界校验被实测否定 |
-| RAG/召回 | 四维加权（提及/关键词/TF-IDF/邻近），无向量 | 零依赖可落地，无需外部 embedding API（Q3 已关闭） |
+| RAG/召回 | 四维加权（提及/关键词/TF-IDF/邻近），无向量 | 零依赖可落地，无需外部 embedding API（Q3 已关闭）。**已落地（T014）**，prompt 缩短 63% |
 | 鉴权 | 本机绑定 + Origin 白名单，无账号体系 | 单机单用户定位；引入账号即推翻整个模型（F095 不排期的根因） |
 | 多项目定位 | 查询参数 `?projectId=`（主）+ `X-Project-Id` 头（辅），一处解析全端点生效 | X2：50 个路由分支仅 2 行真依赖 bootstrap.project；已落地（T011），前端 apiFetch 统一注入 |

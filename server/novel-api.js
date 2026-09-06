@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiContextData, getBootstrapData, getDashboardStats, getCurrentProjectId, getProjectKeyMeta, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiProject, getBootstrapData, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getProjectKeyMeta, getRecallForChapter, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { resolveProjectId } from './novel-project.js';
 import { runAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
@@ -353,19 +353,22 @@ async function handle(req, res) {
       // loadProjectSecret 不抛异常，解密失败会以 error 字段返回，交给 provider 转成可读提示，
       // 避免「主密钥丢了」被包装成一个无信息的 500。
       const secret = loadProjectSecret(projectId);
-      const aiContext = getAiContextData(projectId);
+      // F081：按需召回（Top-K 相关实体）+ 前情记忆（上一章尾部），
+      // 替代旧的全量上下文注入；prompt 分层见 novel-ai-provider.js
+      const recall = getRecallForChapter(projectId, chapter);
+      const memory = getPreviousChapterTail(projectId, chapter ? chapter.id : null);
       const result = await runAiTask({
         taskType: body.taskType || 'sync',
-        project: aiContext.project,
+        project: getAiProject(projectId),
         chapter,
         apiKey: secret.apiKey,
         apiKeyError: secret.error,
         context: {
-          relations: aiContext.relations,
-          knowledge: aiContext.knowledge,
           promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
           selectedText: body.selectedText || ''
-        }
+        },
+        recall,
+        memory
       });
       const taskId = recordAiTask({
         projectId,

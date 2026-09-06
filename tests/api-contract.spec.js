@@ -648,3 +648,84 @@ test.describe('API 契约 · 实体提及与反链（F080 / T013）', () => {
     expect(scoped.chapters, '反链必须按项目隔离').toHaveLength(0);
   });
 });
+
+test.describe('API 契约 · 按需召回与上下文（F081 / T014）', () => {
+  test('28 引用清单回传：提及实体按分入榜，prompt 分层且不再整包灌上下文', async ({ request }) => {
+    const tk = token('recall');
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `召回章-${tk}`, content: '林祈把星火徽章按在掌心。伊莱娜没有说话。' },
+    });
+    expect(created.status()).toBe(201);
+    const chapterId = (await created.json()).chapter.id;
+
+    const res = await request.post(`${API_BASE}/api/novel/ai`, {
+      data: { taskType: 'sync', chapterId },
+    });
+    expect(res.status()).toBe(200);
+    const result = await res.json();
+
+    // 引用清单：让作者看见 AI 看到了什么
+    expect(Array.isArray(result.refs), '响应应携带引用清单').toBe(true);
+    const refTitles = result.refs.map((ref) => ref.title);
+    expect(refTitles).toContain('林祈');
+    expect(refTitles).toContain('星火徽章');
+    const linqi = result.refs.find((ref) => ref.title === '林祈');
+    expect(linqi.score, '提及分应计入总分为正').toBeGreaterThan(0);
+    expect(linqi.reason, '理由应说明为什么召回（本章提及 N 次）').toContain('本章提及');
+
+    // 按分排序：林祈（提及 1 次且关键词满命中）应排在未提及实体之前
+    const scores = result.refs.map((ref) => ref.score);
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores);
+
+    // prompt 分层：出现结构标记，不再出现旧实现的整包 JSON 上下文
+    expect(result.prompt).toContain('【召回的相关实体与设定】');
+    expect(result.prompt).toContain('【正文】');
+    expect(result.prompt).not.toContain('"relations"');
+    expect(typeof result.tokenEstimate).toBe('number');
+    expect(result.tokenEstimate, 'token 估算应为正数').toBeGreaterThan(0);
+  });
+
+  test('29 正文三段截断：长章节 prompt 显著缩短且截断信息可见', async ({ request }) => {
+    const tk = token('trunc');
+    const longContent = '钟声第一次响起时，雾港的煤气灯同时熄灭。林祈站在档案馆门口。'.repeat(120); // ~3800 字
+    const created = await request.post(`${API_BASE}/api/novel/chapters`, {
+      data: { title: `长章-${tk}`, content: longContent },
+    });
+    const chapterId = (await created.json()).chapter.id;
+
+    const result = await (await request.post(`${API_BASE}/api/novel/ai`, {
+      data: { taskType: 'summary', chapterId },
+    })).json();
+
+    expect(result.truncated, '超限正文必须报告截断').toBeTruthy();
+    expect(result.truncated.original).toBe(longContent.length);
+    expect(result.truncated.kept, '保留量应不超过三段上限（1800 + 标记文本）').toBeLessThanOrEqual(1800);
+    // F081 验收（prompt 长度下降）：旧实现 prompt > 正文长度；新实现正文截断到 1800
+    expect(result.prompt.length, 'prompt 应短于原文（对比全量注入）').toBeLessThan(longContent.length);
+    expect(result.prompt).toContain('（中段有截断）');
+  });
+
+  test('30 未提及且不相关的实体不进引用清单', async ({ request }) => {
+    const tk = token('noise');
+    // 用全新项目隔离验证：并行用例会在种子项目里提及种子实体，
+    // 「邻近度」信号（合法设计行为）会把它们带进引用清单 —— 新项目没有提及历史
+    const project = await request.post(`${API_BASE}/api/novel/projects`, {
+      data: { title: `F081-${tk}` },
+    });
+    const projectId = (await project.json()).project.id;
+    const created = await request.post(`${API_BASE}/api/novel/chapters?projectId=${projectId}`, {
+      data: { title: `噪声章-${tk}`, content: '一段与任何设定都无关的独白，只谈天气与潮汐的节律。' },
+    });
+    const chapterId = (await created.json()).chapter.id;
+
+    const result = await (await request.post(`${API_BASE}/api/novel/ai?projectId=${projectId}`, {
+      data: { taskType: 'sync', chapterId },
+    })).json();
+
+    expect(Array.isArray(result.refs)).toBe(true);
+    // 新项目里只有 global 知识候选，与本章文本无交集 → 不得召回（噪声底限 = 0.05）
+    for (const seedName of ['网文黄金三章', '角色弧光模板', '分镜式剧本']) {
+      expect(result.refs.some((ref) => ref.title === seedName), `无关实体「${seedName}」不应被召回`).toBe(false);
+    }
+  });
+});

@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { migrate, currentVersion } from './novel-migrate.js';
 import { decryptSecret, encryptSecret, maskSecret } from './novel-secret.js';
 import { buildMentionScanner } from './novel-mentions.js';
+import { scoreRecallCandidates } from './novel-recall.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
@@ -652,15 +653,84 @@ function countChapters(projectId) {
  * 此前直接复用 getBootstrapData()，一次 AI 调用会连带拉全部章节正文并构建图谱——
  * 两者都不进 prompt（buildPrompt 只用项目设定与当前章）。只取真正需要的部分。
  */
-function getAiContextData(projectId) {
-  return {
-    project: sanitizeProject(get('SELECT * FROM projects WHERE id = ?', [projectId])),
-    relations: all('SELECT * FROM character_relations WHERE project_id = ? ORDER BY id', [projectId]),
-    knowledge: {
-      global: all("SELECT * FROM knowledge_entries WHERE scope = 'global' ORDER BY id"),
-      project: all("SELECT * FROM knowledge_entries WHERE scope = 'project' AND project_id = ? ORDER BY id", [projectId])
-    }
-  };
+/**
+ * AI 项目设定（F081 改造后 /ai 分支只需项目行本身；召回与上下文见 getRecallForChapter）
+ */
+function getAiProject(projectId) {
+  return sanitizeProject(get('SELECT * FROM projects WHERE id = ?', [projectId]));
+}
+
+/** 前情记忆：上一章标题 + 尾部摘录（F086 章节摘要落库前的过渡方案） */
+function getPreviousChapterTail(projectId, chapterId, tailLength = 200) {
+  if (!chapterId) return null;
+  const previous = get(
+    'SELECT id, title, content FROM chapters WHERE project_id = ? AND id < ? ORDER BY id DESC LIMIT 1',
+    [projectId, chapterId]
+  );
+  if (!previous) return null;
+  const content = String(previous.content || '');
+  return { title: previous.title, tail: content.slice(-tailLength) };
+}
+
+/**
+ * 按需召回（F081 / T014）：对本章候选实体四维加权打分，返回 Top-K。
+ * 候选 = 项目实体 + global 知识；打分算法在 novel-recall.js（纯函数）。
+ * 旧实现把 relations/knowledge 全量塞进 prompt（JSON.stringify 整包），
+ * prompt 长度随知识库线性膨胀且大多是噪声 —— 现在只带真正相关的条目。
+ */
+function getRecallForChapter(projectId, chapter, { topK = 8 } = {}) {
+  if (!chapter) return [];
+  const candidates = [];
+  for (const row of all('SELECT id, name, role, motivation, arc FROM characters WHERE project_id = ?', [projectId])) {
+    candidates.push({ entityType: 'character', entityId: row.id, title: row.name, text: [row.name, row.role, row.motivation, row.arc].join('\n') });
+  }
+  for (const row of all("SELECT id, title, body, source FROM knowledge_entries WHERE scope = 'global' OR project_id = ?", [projectId])) {
+    candidates.push({ entityType: 'knowledge', entityId: row.id, title: row.title, text: [row.title, row.body, row.source].join('\n') });
+  }
+  for (const row of all('SELECT id, title, description FROM timeline_events WHERE project_id = ?', [projectId])) {
+    candidates.push({ entityType: 'timeline', entityId: row.id, title: row.title, text: [row.title, row.description].join('\n') });
+  }
+  for (const row of all('SELECT id, name, mood, description FROM scene_locations WHERE project_id = ?', [projectId])) {
+    candidates.push({ entityType: 'scene', entityId: row.id, title: row.name, text: [row.name, row.mood, row.description].join('\n') });
+  }
+  for (const row of all('SELECT id, title, content FROM world_settings WHERE project_id = ?', [projectId])) {
+    candidates.push({ entityType: 'world', entityId: row.id, title: row.title, text: [row.title, row.content].join('\n') });
+  }
+  for (const row of all('SELECT id, term, definition FROM glossary_terms WHERE project_id = ?', [projectId])) {
+    candidates.push({ entityType: 'glossary', entityId: row.id, title: row.term, text: [row.term, row.definition].join('\n') });
+  }
+  if (!candidates.length) return [];
+
+  // 信号①：本章提及计数（T013 提及表）
+  const mentionCounts = {};
+  for (const row of all(
+    'SELECT entity_type, entity_id, COUNT(*) AS count FROM entity_mentions WHERE chapter_id = ? GROUP BY entity_type, entity_id',
+    [chapter.id]
+  )) {
+    mentionCounts[`${row.entity_type}:${row.entity_id}`] = row.count;
+  }
+
+  // 信号④：各实体最近一次被提及的章节位置（邻近度）
+  const chapterIndex = get('SELECT COUNT(*) AS count FROM chapters WHERE project_id = ? AND id < ?', [projectId, chapter.id]).count;
+  const indexById = new Map(
+    all('SELECT id FROM chapters WHERE project_id = ? ORDER BY id', [projectId]).map((row, index) => [row.id, index])
+  );
+  const lastMentionIndex = {};
+  for (const row of all(
+    'SELECT entity_type, entity_id, MAX(chapter_id) AS last_chapter FROM entity_mentions WHERE project_id = ? GROUP BY entity_type, entity_id',
+    [projectId]
+  )) {
+    const index = indexById.get(row.last_chapter);
+    if (index != null) lastMentionIndex[`${row.entity_type}:${row.entity_id}`] = index;
+  }
+
+  return scoreRecallCandidates(candidates, {
+    chapterText: chapter.content || '',
+    mentionCounts,
+    chapterIndex,
+    lastMentionIndex,
+    topK
+  });
 }
 
 function createProject({ title, genre, worldView, targetPlatform, writingStyle }) {
@@ -1676,4 +1746,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteEntityAlias, deleteKnowledge, exportChapter, exportProject, getAiContextData, getBootstrapData, get, getDashboardStats, getCurrentProjectId, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteEntityAlias, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getAiProject, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getRecallForChapter, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
