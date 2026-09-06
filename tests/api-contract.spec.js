@@ -729,3 +729,103 @@ test.describe('API 契约 · 按需召回与上下文（F081 / T014）', () => {
     }
   });
 });
+
+test.describe('API 契约 · 流式输出（F082 / T015）', () => {
+  // 用 Node 原生 fetch 读流（Playwright 的 request 会缓冲整个响应体，
+  // 测不了「首字节时延」与「中断」—— 这两条恰恰是本需求的核心验收）
+  async function consumeStream(payload, { abortAfterFrames = 0 } = {}) {
+    const started = performance.now();
+    const response = await fetch(`${API_BASE}/api/novel/ai/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let firstFrameMs = null;
+    const events = [];
+    let frames = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separator;
+      while ((separator = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        let event = 'message';
+        let data = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        if (firstFrameMs === null) firstFrameMs = performance.now() - started;
+        frames += 1;
+        events.push({ event, data: JSON.parse(data) });
+        if (abortAfterFrames && frames >= abortAfterFrames) {
+          await reader.cancel(); // 模拟客户端中断
+          return { events, firstFrameMs, aborted: true };
+        }
+      }
+    }
+    return { events, firstFrameMs, aborted: false };
+  }
+
+  test('31 SSE 流程：meta → delta → done，首字节 < 500ms，拼接文本与终态一致', async ({ request }) => {
+    const marker = `stream-marker-${token('t15')}`;
+    const { events, firstFrameMs } = await consumeStream({ taskType: marker, mock: true });
+
+    expect(events[0].event, '首帧必须是 meta（引用/截断信息先行）').toBe('meta');
+    expect(events[0].data.provider).toBe('mock');
+    const types = events.map((frame) => frame.event);
+    expect(types[types.length - 1], '末帧必须是 done').toBe('done');
+    expect(types.filter((t) => t === 'delta').length, 'mock 流应有确定性增量').toBeGreaterThan(0);
+
+    // design C 节验收：首字节 < 500ms（mock 本地瞬时，线上由真实 provider 决定）
+    expect(firstFrameMs, `首帧耗时 ${Math.round(firstFrameMs)}ms 应小于 500ms`).toBeLessThan(500);
+
+    const done = events[events.length - 1].data;
+    expect(done.provider).toBe('mock');
+    expect(Array.isArray(done.items), 'done.items 应为数组').toBe(true);
+    expect(done.items.length, 'done 应携带结构化结果').toBeGreaterThan(0);
+    expect(done.taskId, 'done 应携带 taskId（服务端已落库）').toBeTruthy();
+    // 拼接文本必须包含终态第一项内容（确定性分片，不存在时序随机）
+    const assembled = events.filter((frame) => frame.event === 'delta').map((frame) => frame.data.text).join('');
+    expect(assembled).toContain(done.items[0].title);
+
+    // 完成的流必须落库（用唯一标记断言，免于并行竞争）
+    const history = await (await request.get(`${API_BASE}/api/novel/ai/history?limit=100`)).json();
+    expect(history.tasks.some((task) => task.task_type === marker), '完成的流应写入 AI 历史').toBe(true);
+  });
+
+  test('32 客户端中断：连接关闭后服务保持健康且不落库', async ({ request }) => {
+    // 唯一 taskType 标记：并行 worker 会往同一历史表写数据，全局计数断言有竞争
+    const marker = `abort-marker-${token('t15')}`;
+
+    const { aborted } = await consumeStream({ taskType: marker, mock: true }, { abortAfterFrames: 2 });
+    expect(aborted, '用例前置：确实触发了客户端中断').toBe(true);
+
+    // 中断后服务必须活着（design 验收：中断后服务端不报错）
+    const alive = await request.get(`${API_BASE}/api/novel/bootstrap`);
+    expect(alive.status(), '中断后服务应保持可用').toBe(200);
+
+    // 中断的流不写入历史（前端「已停止生成，不会写入 AI 历史」的承诺要兑现）
+    const after = await (await request.get(`${API_BASE}/api/novel/ai/history?limit=100`)).json();
+    expect(after.tasks.some((task) => task.task_type === marker), '中断的流不应落库').toBe(false);
+  });
+
+  test('33 JSON 双通道并存：/ai 在流式上线后行为不变', async ({ request }) => {
+    const res = await request.post(`${API_BASE}/api/novel/ai`, {
+      data: { taskType: 'polish' },
+    });
+    expect(res.status(), 'JSON 通道必须继续可用（design：双通道并存）').toBe(200);
+    const result = await res.json();
+    expect(result.provider).toBe('mock');
+    expect(result.tokenEstimate).toBeGreaterThan(0);
+  });
+});

@@ -269,30 +269,49 @@ const MOCK_NOTICE = {
   tone: 'warning'
 };
 
+/** mock/降级时的结构化输出（JSON 通道与流式通道共用） */
+function buildMockItems(taskType, apiKeyError) {
+  if (apiKeyError) {
+    return [{ title: 'AI 密钥不可用', body: apiKeyError, tone: 'danger' }];
+  }
+  return [
+    MOCK_NOTICE,
+    ...(taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))
+  ];
+}
+
+/** 模型返回内容 → 结构化 items（优先 JSON 数组，失败则整段作为单卡） */
+function parseModelContent(content) {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return [{ title: 'AI 返回结果', body: content, tone: '' }];
+  }
+}
+
+/** 召回条目 → 引用清单（让作者看见 AI 看到了什么，F081 验收项） */
+function toRef(item) {
+  return { type: item.entityType, title: item.title, score: item.score, reason: item.reason };
+}
+
 /**
- * 执行一个 AI 任务。
+ * 执行一个 AI 任务（JSON 通道，F082 后与流式通道并存）。
  *
  * @param {{taskType:string, project:object, chapter:object|null, context:object,
- *          apiKey?:string, apiKeyError?:string|null}} params
+ *          apiKey?:string, apiKeyError?:string|null, recall?:Array, memory?:object|null}} params
  *   apiKey      项目库解密所得密钥（空串表示项目未配置，回落到环境变量）
  *   apiKeyError 项目库密钥解密失败的原因；非空时**直接返回可读错误**，
  *               绝不静默降级成 mock —— 否则用户会以为 AI 正常工作。
- * @returns {Promise<{provider:string, prompt:string, items:Array}>}
+ * @returns {Promise<{provider:string, prompt:string, items:Array, refs:Array, truncated:object|null, tokenEstimate:number}>}
  */
 async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null, recall = [], memory = null }) {
   const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory });
   const tokenEstimate = estimateTokens(prompt);
+  const refs = recall.map(toRef);
 
   // 解密失败优先于一切：这是可修复的配置故障，必须让用户看见
   if (apiKeyError) {
-    return {
-      provider: 'secret-error',
-      prompt,
-      items: [{ title: 'AI 密钥不可用', body: apiKeyError, tone: 'danger' }],
-      refs: recall.map(toRef),
-      truncated,
-      tokenEstimate
-    };
+    return { provider: 'secret-error', prompt, items: buildMockItems(taskType, apiKeyError), refs, truncated, tokenEstimate };
   }
 
   const resolvedKey = apiKey || process.env.NOVEL_AI_API_KEY || '';
@@ -306,25 +325,163 @@ async function runAiTask({ taskType, project, chapter, context, apiKey = '', api
       provider: providerResult.provider,
       prompt,
       items: providerResult.items.map(item => Array.isArray(item) ? { title: item[0], body: item[1], tone: item[2] || '' } : item),
-      refs: recall.map(toRef),
-      truncated,
-      tokenEstimate
+      refs, truncated, tokenEstimate
     };
   }
 
-  return {
-    provider: 'mock',
-    prompt,
-    items: [MOCK_NOTICE, ...(taskTemplates[taskType] || taskTemplates.sync).map(([title, body, tone]) => ({ title, body, tone: tone || '' }))],
-    refs: recall.map(toRef),
-    truncated,
-    tokenEstimate
-  };
-}
-
-/** 召回条目 → 引用清单（让作者看见 AI 看到了什么，F081 验收项） */
-function toRef(item) {
-  return { type: item.entityType, title: item.title, score: item.score, reason: item.reason };
+  return { provider: 'mock', prompt, items: buildMockItems(taskType, null), refs, truncated, tokenEstimate };
 }
 
 export { runAiTask };
+
+/* ════════════════════════════════════════════════════════════════════
+ * 流式通道（F082 / T015，可行性依据 design 文档 C 节实测：首字节 11.2ms、
+ * AbortController 中断正常、node:http 原生 SSE 零依赖）
+ *
+ * 事件流（SSE，event/data 帧）：
+ *   meta  {provider, refs, truncated, tokenEstimate}  —— 召回/截断信息先行
+ *   delta {text}                                       —— 增量正文
+ *   done  {provider, items, prompt, tokenEstimate}     —— 终态（服务端据此落库）
+ *   error {message}                                    —— 流中失败
+ *
+ * mock 流是**确定性**的：固定 40 字符分片、无人工延时 —— Playwright 断言
+ * 「最终拼接文本 == 预期串」，规避时序 flaky（design R12）。
+ * ════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 上游 OpenAI 兼容流式转发：stream:true → 逐行解析 data: 帧 → yield 增量文本。
+ * [DONE] 或上游关闭即结束；signal.aborted 时经 AbortController 中断上游连接。
+ */
+async function* streamFromOpenAI({ project, prompt, apiKey, signal }) {
+  const baseUrl = process.env.NOVEL_AI_BASE_URL || project.ai_base_url;
+  const model = process.env.NOVEL_AI_MODEL || project.ai_model;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  const onAbort = () => controller.abort();
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: '你是专业小说创作辅助系统，输出 JSON 数组，每项包含 title/body/tone。' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        stream: true
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`AI provider failed: ${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') return;
+        try {
+          const delta = JSON.parse(payload).choices?.[0]?.delta?.content || '';
+          if (delta) yield delta;
+        } catch {
+          // 上游可能发送注释行/心跳帧，忽略非 JSON 行
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (signal) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/** mock 流的固定间隔：让「停止生成」真实可中断，也让中断测试免于竞态（design R12/C） */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** 固定长度分片（确定性，便于测试断言拼接结果） */
+function chunkText(text, size = 40) {
+  const chars = Array.from(String(text || ''));
+  const chunks = [];
+  for (let i = 0; i < chars.length; i += size) chunks.push(chars.slice(i, i + size).join(''));
+  return chunks;
+}
+
+/**
+ * 流式执行一个 AI 任务（async generator，事件对象逐个 yield）。
+ *
+ * @param {object} params 与 runAiTask 相同，另加：
+ *   forceMock {boolean} body.mock=1 时强制走确定性 mock 流（测试用，design R12）
+ *   signal    {{aborted:boolean}} 客户端断开标记（endpoint 在 req.close 置位）
+ */
+export async function* streamAiTask({
+  taskType, project, chapter, context, apiKey = '', apiKeyError = null,
+  recall = [], memory = null, forceMock = false, signal = null
+}) {
+  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory });
+  const tokenEstimate = estimateTokens(prompt);
+  const refs = recall.map(toRef);
+
+  if (apiKeyError) {
+    // 解密失败与 JSON 通道同语义：直接返回可读错误，绝不静默降级
+    yield { type: 'meta', provider: 'secret-error', refs, truncated, tokenEstimate };
+    yield { type: 'done', provider: 'secret-error', items: buildMockItems(taskType, apiKeyError), prompt, tokenEstimate };
+    return;
+  }
+
+  const resolvedKey = apiKey || process.env.NOVEL_AI_API_KEY || '';
+  const canStreamReal = !forceMock && resolvedKey
+    && (process.env.NOVEL_AI_BASE_URL || project.ai_base_url)
+    && (process.env.NOVEL_AI_MODEL || project.ai_model) !== 'mock-novel-copilot';
+
+  if (canStreamReal) {
+    yield { type: 'meta', provider: 'openai-compatible', refs, truncated, tokenEstimate };
+    const accumulated = [];
+    try {
+      for await (const delta of streamFromOpenAI({ project, prompt, apiKey: resolvedKey, signal })) {
+        if (signal && signal.aborted) return; // 客户端已断开，停止产出
+        accumulated.push(delta);
+        yield { type: 'delta', text: delta };
+      }
+      yield {
+        type: 'done',
+        provider: 'openai-compatible',
+        items: parseModelContent(accumulated.join('')),
+        prompt,
+        tokenEstimate
+      };
+      return;
+    } catch (error) {
+      if (accumulated.length) {
+        // 已经流出部分内容，无法干净重启 —— 显式报错，前端保留已收文本
+        yield { type: 'error', message: `流式调用中断：${error.message}` };
+        return;
+      }
+      // 一个增量都没出 → 降级 mock 流，保持可用（最终徽章 mock-fallback）
+      yield { type: 'meta', provider: 'mock-fallback', refs, truncated, tokenEstimate };
+    }
+  } else if (!forceMock) {
+    // 未配置密钥等：仍发 meta，保证前端徽章与 JSON 通道三态一致
+    yield { type: 'meta', provider: 'mock', refs, truncated, tokenEstimate };
+  } else {
+    yield { type: 'meta', provider: 'mock', refs, truncated, tokenEstimate };
+  }
+
+  // mock 确定性流：notice + 模板文本按固定 40 字符分片
+  const items = buildMockItems(taskType, null);
+  const text = items.map(item => `【${item.title}】${item.body}`).join('\n\n');
+  for (const chunk of chunkText(text)) {
+    if (signal && signal.aborted) return;
+    await sleep(15);
+    if (signal && signal.aborted) return; // 间隔期间客户端断开：不再产出
+    yield { type: 'delta', text: chunk };
+  }
+  yield { type: 'done', provider: forceMock ? 'mock' : 'mock', items, prompt, tokenEstimate };
+}

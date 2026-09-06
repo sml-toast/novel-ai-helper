@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
 import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiProject, getBootstrapData, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getProjectKeyMeta, getRecallForChapter, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { resolveProjectId } from './novel-project.js';
-import { runAiTask } from './novel-ai-provider.js';
+import { runAiTask, streamAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
 import { createPublishTask, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
@@ -315,6 +315,81 @@ async function handle(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/novel/world') {
       const body = await readJson(req);
       return send(res, 201, { setting: addWorldSetting({ projectId, category: body.category || '设定', title: body.title || '未命名设定', content: body.content || '' }) });
+    }
+
+    // F082 / T015：SSE 流式通道（与 JSON 通道 /ai 并存）。
+    // 帧：meta（召回/截断/徽章）→ delta（增量）→ done（终态 + taskId，服务端落库）/ error。
+    // 客户端断开：req.close 置位 signal，generator 停止产出且不落库（中断不写历史）。
+    if (req.method === 'POST' && url.pathname === '/api/novel/ai/stream') {
+      const body = await readJson(req);
+      const chapter = body.chapterId ? get('SELECT * FROM chapters WHERE id = ?', [Number(body.chapterId)]) : null;
+      const secret = loadProjectSecret(projectId);
+      const recall = getRecallForChapter(projectId, chapter);
+      const memory = getPreviousChapterTail(projectId, chapter ? chapter.id : null);
+
+      // CORS 头必须随 writeHead 一起发 —— writeHead 之后 setHeader 会抛
+      // ERR_HTTP_HEADERS_SENT（实测踩过：进程直接崩溃，流全断）
+      const streamHeaders = {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no' // 防反代缓冲
+      };
+      if (res.locals.corsOrigin) {
+        streamHeaders['access-control-allow-origin'] = res.locals.corsOrigin;
+        streamHeaders['vary'] = 'Origin';
+      }
+      res.writeHead(200, streamHeaders);
+      res.socket?.setNoDelay?.(true); // 关 Nagle，保证 chunk 立即发出
+      res.flushHeaders?.();
+
+      const sse = (event, data) => {
+        if (res.writableEnded || res.destroyed) return false;
+        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        return true;
+      };
+      const abortState = { aborted: false };
+      req.on('close', () => { abortState.aborted = true; });
+
+      try {
+        let doneEvent = null;
+        for await (const event of streamAiTask({
+          taskType: body.taskType || 'sync',
+          project: getAiProject(projectId),
+          chapter,
+          apiKey: secret.apiKey,
+          apiKeyError: secret.error,
+          context: {
+            promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
+            selectedText: body.selectedText || ''
+          },
+          recall,
+          memory,
+          forceMock: body.mock === true,
+          signal: abortState
+        })) {
+          if (event.type === 'done') { doneEvent = event; break; }
+          if (event.type === 'error') { sse('error', { message: event.message }); break; }
+          if (!sse(event.type, event)) break; // 客户端已断开
+        }
+        // 中断的流不落库（与「中断不写历史」的前端语义一致）
+        if (doneEvent && !abortState.aborted) {
+          const taskId = recordAiTask({
+            projectId,
+            chapterId: chapter ? chapter.id : null,
+            taskType: body.taskType || 'sync',
+            input: { taskType: body.taskType || 'sync', chapterId: body.chapterId ?? null, mock: body.mock === true, prompt: doneEvent.prompt },
+            output: doneEvent.items,
+            provider: doneEvent.provider
+          });
+          sse('done', { provider: doneEvent.provider, items: doneEvent.items, tokenEstimate: doneEvent.tokenEstimate, taskId });
+        }
+      } catch (error) {
+        sse('error', { message: error.message });
+      } finally {
+        res.end();
+      }
+      return;
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/ai/history') {

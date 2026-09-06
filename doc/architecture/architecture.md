@@ -71,9 +71,9 @@ graph TB
 | 文件 | 行数 | 职责 | 关键点 |
 |---|---|---|---|
 | `novel-ai.html` | 494 | 工作台页面结构 | 注入 `window.NOVEL_API_PORT`；69 个 `data-action` 触发点 |
-| `novel-ai.js` | 1904 | 前端全部逻辑（单文件 ES module） | 事件委托路由、F076 防丢稿状态机、F079 项目切换器、日志系统、`escapeHtml` 统一转义、F078 导入交互 |
+| `novel-ai.js` | 2090 | 前端全部逻辑（单文件 ES module） | 事件委托路由、F076 防丢稿状态机、F079 项目切换器、日志系统、`escapeHtml` 统一转义、F078 导入交互 |
 | `novel-ai.css` | 839 | 样式与主题 | CSS 变量、明暗主题、响应式侧栏 |
-| `server/novel-api.js` | 458 | REST 路由（50+ 个分支）+ 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；F079 项目上下文解析；`readJson` 2MB 上限；413/400/500 统一兜底 |
+| `server/novel-api.js` | 578 | REST 路由（50+ 分支）+ SSE 端点 + 中间件编排 | `send()` 按 Origin 回显 CORS；bootstrap 惰性化；F079 项目上下文解析；`readJson` 2MB 上限；413/400/500 统一兜底 |
 | `server/novel-project.js` | 27 | 项目上下文解析（F079） | 纯函数：`?projectId=` → `X-Project-Id` 头 → 回落默认；存在性校验在 db 层 |
 | `server/novel-db.js` | 1749 | 数据访问层（全部 SQL 集中于此） | 22 表 + FTS5 建表、种子数据、密钥脱敏/加解密接入、审计日志、F078 导出/导入回灌、F079 多项目取数、F088 检索索引、F080 提及/别名、F081 召回取数 |
 | `server/novel-mentions.js` | 71 | 提及扫描器（F080） | 纯函数：首字符索引最长匹配、负例优先遮蔽；词典组装在 db 层 |
@@ -204,6 +204,7 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 | 关系 | `/relations` | POST | 人物关系 |
 | 实体列表 | `/characters`、`/timeline`、`/scenes`、`/world` | GET/POST | 四类创作实体 |
 | **AI 任务** | `/ai` | POST | 统一入口：taskType + chapterId + selectedText → 按需召回 + 分层 prompt → runAiTask（响应含 refs/truncated/tokenEstimate）→ 落 ai_tasks |
+| | `/ai/stream` | POST | **SSE 流式（F082/T015）**：meta（refs/截断/徽章）→ delta（增量）→ done（终态+taskId）/ error；客户端断开不落库；`mock:true` 走确定性假流（40 字符×15ms 分片）；CORS 头随 writeHead 发出（实测：事后 setHeader 会让进程崩溃） |
 | | `/ai/history`、`/ai/tasks/:id/feedback` | GET/POST | 历史与评价 |
 | 检索/图谱 | `/search`、`/graph` | GET | FTS5 bigram 粗筛 + 字面后过滤，七类实体项目隔离检索（F088/T012）；知识图谱构建（按 type 过滤） |
 | **提及/反链** | `/mentions?chapterId=`、`/mentions/backlink?entityType&entityId` | GET | 本章提及（按实体分组计数、标题解析）、实体反链（哪些章节提到它，项目隔离，F080/T013） |
@@ -366,13 +367,12 @@ OPTIONS 分流（预检：白名单 204 / 非法 403）
 
 | # | 现状 | 影响 | 去向 |
 |---|---|---|---|
-| 1 | AI 无流式输出，长任务干等最多 60s | 体验差；SSE 方案已实测可行 | T015（SSE + 可中断 + 三态标识） |
-| 2 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
-| 3 | 前端单文件持续增长（2010 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
-| 4 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
-| 5 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
-| 6 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
-| 7 | 实体端点按 id 寻址、未校验所属项目（如 `/chapters/:id/save`） | 单用户本机场景无越权风险；多用户化时必须补项目归属校验 | 保持单机定位；若引入账号体系则随鉴权重构一并处理 |
+| 1 | 发布仅模拟、无后台调度器 | 进程不在前台打开面板就不触发 | T018 |
+| 2 | 前端单文件持续增长（2090 行） | 改动冲突面大 | T021（模块化，建议 M5 后立即做，见 R15） |
+| 3 | `node:sqlite` 在部分 Node 版本仍是 experimental | 启动可能打印 `ExperimentalWarning`（正常现象）；Node 大版本升级可能破 API | engines 锁 `>=22.5.0`；数据访问集中单文件，变更面可控 |
+| 4 | 密钥解密依赖主密钥文件 | 主密钥丢失 = 已存密钥不可恢复（可修复的配置故障，有 UI 引导） | 备份引导已交付（F075 A4）；云备份属远期想法 |
+| 5 | 页面 `<head>` 引用 Google Fonts 外链 | 离线/网络受限时字体回退系统字体（快速失败无碍）；网络被静默黑洞的环境会拖慢首屏加载 | 远期可评估自托管字体子集 |
+| 6 | 实体端点按 id 寻址、未校验所属项目（如 `/chapters/:id/save`） | 单用户本机场景无越权风险；多用户化时必须补项目归属校验 | 保持单机定位；若引入账号体系则随鉴权重构一并处理 |
 
 ---
 

@@ -689,6 +689,21 @@ button.node { color: var(--text); cursor: pointer; }
 
 .mention-chips .mention-chip button:hover { color: var(--danger); }
 
+/* F082：流式生成卡（增量实时写入，done 后整卡移除替换为结构化结果） */
+.assist-card.streaming h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.assist-card.streaming p {
+  white-space: pre-wrap;
+  max-height: 200px;
+  overflow: hidden;
+  color: var(--muted);
+}
+
 .mention-empty { font-size: 12px; color: var(--muted); }
 
 .search-box input {

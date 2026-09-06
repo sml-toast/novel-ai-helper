@@ -956,26 +956,106 @@ function flashAssist(title, body, tone = '') {
   assistFeed.insertAdjacentHTML('afterbegin', renderAssistCard({ title, body, tone }));
 }
 
+/**
+ * AI 任务统一走流式通道（F082/T015）：实时卡 + 可中断。
+ * SSE 帧：meta（引用/截断信息，用于「引用来源」卡）→ delta（增量）→ done（终态多卡）/ error。
+ * 断流自动降级：/stream 不可达时回落 JSON 通道 /ai（双通道并存，design C）。
+ */
 async function runAi(taskType) {
   if (!apiOnline) {
     flashAssist(taskLabels[taskType] || '本地演示', 'API 未启动，当前为本地演示模式。');
     return;
   }
+
+  const controller = new AbortController();
+  // 流式卡：增量实时写入；done 后整卡替换为结构化结果
+  const card = document.createElement('article');
+  card.className = 'assist-card streaming';
+  const titleEl = document.createElement('h3');
+  titleEl.textContent = `${taskLabels[taskType] || taskType}（生成中…）`;
+  const bodyEl = document.createElement('p');
+  const stopBtn = document.createElement('button');
+  stopBtn.type = 'button';
+  stopBtn.className = 'ghost-btn';
+  stopBtn.textContent = '停止';
+  titleEl.appendChild(stopBtn);
+  card.append(titleEl, bodyEl);
+  assistFeed.prepend(card);
+  stopBtn.addEventListener('click', () => controller.abort());
+
+  const showRefsCard = (meta) => {
+    if (!meta || !meta.refs || !meta.refs.length) return;
+    const refsText = meta.refs.map(ref => `${ref.title}（${ref.score}·${ref.reason}）`).join('；');
+    const cut = meta.truncated ? `｜正文已从 ${meta.truncated.original} 字截断至 ${meta.truncated.kept} 字` : '';
+    flashAssist('引用来源（AI 看到了什么）', `${refsText}｜本次 prompt 约 ${meta.tokenEstimate} tokens${cut}`);
+  };
+
   try {
-    const result = await apiFetch('/ai', {
+    const response = await fetch(`${apiBase}/ai/stream`, {
       method: 'POST',
-      body: JSON.stringify({ taskType, chapterId: activeChapter.id, selectedText: editor.value.slice(0, 1200) })
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskType, chapterId: activeChapter ? activeChapter.id : null, selectedText: editor.value.slice(0, 1200) }),
+      signal: controller.signal
     });
-    // F081：引用来源卡 —— 让作者看见「AI 看到了什么」（召回实体 + 相关度 + 截断信息）
-    if (result.refs && result.refs.length) {
-      const refsText = result.refs.map(ref => `${ref.title}（${ref.score}·${ref.reason}）`).join('；');
-      const meta = result.tokenEstimate ? `｜本次 prompt 约 ${result.tokenEstimate} tokens` : '';
-      const cut = result.truncated ? `｜正文已从 ${result.truncated.original} 字截断至 ${result.truncated.kept} 字` : '';
-      flashAssist('引用来源（AI 看到了什么）', `${refsText}${meta}${cut}`);
+    if (!response.ok) throw new Error(`API ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let accumulated = '';
+    let donePayload = null;
+    // SSE 以空行分帧；逐帧解析 event/data（design C.2 客户端骨架）
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separator;
+      while ((separator = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, separator);
+        buffer = buffer.slice(separator + 2);
+        let event = 'message';
+        let data = '';
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) data += line.slice(5).trim();
+        }
+        if (!data) continue;
+        const payload = JSON.parse(data);
+        if (event === 'meta') showRefsCard(payload);
+        else if (event === 'delta') {
+          accumulated += payload.text;
+          bodyEl.textContent = accumulated;
+        } else if (event === 'done') donePayload = payload;
+        else if (event === 'error') throw new Error(payload.message);
+      }
     }
-    result.items.reverse().forEach(item => flashAssist(item.title, item.body, item.tone));
+
+    if (donePayload) {
+      card.remove();
+      // 终态：结构化多卡 + 可信标识（provider 三态随 done 徽章落到每张卡前的提示）
+      const providerBadge = { 'openai-compatible': '真实模型', mock: '本地演示', 'mock-fallback': '降级演示', 'secret-error': '配置错误' }[donePayload.provider] || donePayload.provider;
+      flashAssist('生成完成', `来源：${providerBadge}${donePayload.tokenEstimate ? `｜约 ${donePayload.tokenEstimate} tokens` : ''}`);
+      (donePayload.items || []).slice().reverse().forEach(item => flashAssist(item.title, item.body, item.tone));
+    } else {
+      card.remove();
+    }
   } catch (error) {
-    flashAssist('AI 接口错误', error.message, 'danger');
+    card.remove();
+    if (error.name === 'AbortError') {
+      flashAssist('已停止生成', '本次生成已中断，不会写入 AI 历史。');
+      return;
+    }
+    // 流不可达（老服务/代理剥离 SSE）→ 回落 JSON 通道，功能不因升级而中断
+    try {
+      const result = await apiFetch('/ai', {
+        method: 'POST',
+        body: JSON.stringify({ taskType, chapterId: activeChapter ? activeChapter.id : null, selectedText: editor.value.slice(0, 1200) })
+      });
+      showRefsCard(result);
+      result.items.slice().reverse().forEach(item => flashAssist(item.title, item.body, item.tone));
+    } catch (fallbackError) {
+      flashAssist('AI 接口错误', fallbackError.message, 'danger');
+    }
   }
 }
 

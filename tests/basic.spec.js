@@ -53,4 +53,18 @@ test.describe('Novel AI 助手 - 基础验证', () => {
     await switcher.selectOption(previousValue);
     await expect(cardTitle, '切回后项目卡标题应恢复').toHaveText(previousTitle);
   });
+
+  // F082/T015：前端流式消费端到端。mock 流确定性分片（40 字符 × 15ms），
+  // done 后流式卡被结构化结果卡替换 —— 断言终态卡片内容即可，无需断言中间帧
+  test('同步辅助走流式通道并渲染结构化结果', async ({ page }) => {
+    await page.locator('[data-action="run-sync-ai"]').click();
+    await expect(
+      page.locator('#assistFeed .assist-card').filter({ hasText: 'AI 同步辅助完成' }).first(),
+      '流式完成后应出现结构化结果卡（mock 模板第一条）'
+    ).toBeVisible();
+    await expect(
+      page.locator('#assistFeed .assist-card').filter({ hasText: '生成完成' }).first(),
+      '应显示来源徽章（可信标识）'
+    ).toContainText('本地演示');
+  });
 });
