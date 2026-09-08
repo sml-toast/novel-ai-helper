@@ -59,6 +59,7 @@
 | F034 | 导入项目知识 | `import-knowledge` | 导入外部知识文件 |
 | F035 | 关系设计 | `relationship-ai` | AI 辅助设计角色关系 |
 | F036 | 生成思维图 | `mindmap` | 生成思维导图 |
+| F091 | **力导向节点图**（F091 重写） | 自动渲染 + `refresh-graph` | **零依赖 Fruchterman-Reingold 简化版（js/graph-layout.js 纯数学 + js/graph-view.js 视图层，DOM 节点 + SVG 边混合方案，保留 data-node-id 点击契约与类型过滤）：①首屏同步收敛后渲染（238 节点 ~200ms）；②拖拽节点 = 固定（📌 虚线描边），双击解除固定（重叠时就近解除 60px 内固定节点）；③滚轮以光标为锚缩放（0.35x–2.6x），拖空白平移；④移除旧 16 节点截断，节点坐标/固定状态跨刷新与类型切换延续；⑤收敛后 alpha 阈值自停、大图（>100）每帧 3 tick 只绘一次 + 隔帧边更新 + 冻结低速节点；⑥0 节点空态提示 / 孤立节点向心聚拢 / 超长标签 170px 截断换行** |
 
 ### 5. 发布管理
 | 编号 | 功能名称 | data-action | 说明 |
@@ -120,6 +121,13 @@
 | F070 | 图谱类型切换 | `data-graph-type=[all|character|knowledge|timeline|world]` | 切换知识图谱视图模式 |
 | F071 | 辅助面板标签 | `data-tab=[ideas| risks| checks]` | 切换 AI 辅助侧栏标签 |
 | F072 | 关闭面板 | `data-close-panel` | 关闭打开的侧边/下拉面板 |
+
+### 10.5 编辑器专注模式与排版（F090）
+| 编号 | 功能名称 | 触发方式 | 说明 |
+|------|----------|----------|------|
+| F090 | **专注 / 打字机 / 沉浸模式** | `focus-toggle` 按钮 或 Esc 退出 | **`body.focus-mode` 单类驱动：隐藏侧栏/顶栏/概览卡/图谱/运营面板，只留编辑器（自动单列拉满视口）；Esc 优先关确认弹窗、其次退专注。打字机滚动：光标行离开视口 40%~60% 死区才小幅回中（rAF 节流，不逐键强制滚动）；当前段落高亮：textarea 下同排版镜像层 `<mark>` 透出（仅专注模式生效）。与 autosave 互不干扰，Cmd+S 行为不变（js/focus-mode.js）** |
+| F090a | 编辑区字号 | `font-dec` / `font-inc` | 15–24px 六档循环步进，`localStorage(novelai.editor.fontSize)` 持久化 |
+| F090b | 编辑区行宽 | `width-cycle` | 全宽/860/720/600px 四档循环，`localStorage(novelai.editor.lineWidth)` 持久化；字号/行宽以 `--editor-*` CSS 变量下发，普通模式同样生效 |
 
 ### 11. 日志系统
 | 编号 | 功能名称 | data-action | 说明 |

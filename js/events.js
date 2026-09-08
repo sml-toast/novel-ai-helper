@@ -22,6 +22,7 @@ import { refreshDashboard, loadHistory, loadAudit, saveGoal, addProgress } from 
 import { saveAiSettings, clearApiKey, exportMasterKey, savePrompt, loadPrompts } from './ai-settings.js';
 import { addCharacter, loadCharacters, addTimeline, loadTimeline, addScene, loadScenes, addWorld, loadWorld } from './story-bible.js';
 import { openLogDrawer, compressLogs, clearLogs, renderLogPanel } from './log.js';
+import { toggleFocusMode, exitFocusMode, changeFontSize, cycleLineWidth } from './focus-mode.js';
 
 document.addEventListener('click', event => {
   const graphTypeButton = event.target.closest('[data-graph-type]');
@@ -186,6 +187,11 @@ document.addEventListener('click', event => {
   if (action === 'compress-logs') return compressLogs();
   if (action === 'clear-logs') return clearLogs();
   if (action === 'refresh-logs') return renderLogPanel();
+  // F090：专注模式（按钮双入口之一，Esc 是另一入口）与编辑区字号/行宽
+  if (action === 'focus-toggle') return toggleFocusMode();
+  if (action === 'font-dec') return changeFontSize(-1);
+  if (action === 'font-inc') return changeFontSize(1);
+  if (action === 'width-cycle') return cycleLineWidth();
 });
 
 document.getElementById('logLevelFilter')?.addEventListener('change', () => {
@@ -219,7 +225,7 @@ window.addEventListener('beforeunload', event => {
   return '';
 });
 
-/* ── F076 快捷键：Cmd/Ctrl+S 手动存稿（生成版本）+ ESC 关闭弹窗 ── */
+/* ── F076/F090 快捷键：Cmd/Ctrl+S 手动存稿 + Esc 关弹窗/退专注模式 ── */
 window.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     // 不 preventDefault 的话浏览器会弹出「保存网页」对话框
@@ -227,7 +233,9 @@ window.addEventListener('keydown', event => {
     saveDraft();
     return;
   }
-  if (event.key === 'Escape' && modalMask && !modalMask.hidden) {
-    closeModal('cancel');
+  if (event.key === 'Escape') {
+    // 优先级：确认弹窗 > 专注模式。普通模式下 Esc 无副作用
+    if (modalMask && !modalMask.hidden) closeModal('cancel');
+    else exitFocusMode();
   }
 });

@@ -1151,3 +1151,117 @@ button.node { color: var(--text); cursor: pointer; }
   color: var(--muted);
   font-size: 13px;
 }
+
+/* ══════════ F090 专注 / 打字机 / 沉浸模式 ══════════
+   只用 body.focus-mode 一个类驱动全部显隐：退出即恢复原布局，无 JS 逐元素还原。 */
+
+body.focus-mode .sidebar,
+body.focus-mode .topbar,
+body.focus-mode .hero-grid,
+body.focus-mode .feature-grid,
+body.focus-mode .graph-layout,
+body.focus-mode .ops-layout,
+body.focus-mode .assistant-panel,
+body.focus-mode .editor-footer { display: none; }
+
+body.focus-mode .workspace { gap: 0; padding: 18px; }
+
+/* 只剩编辑器一列，面板拉满视口高度 */
+body.focus-mode .editor-layout { grid-template-columns: minmax(0, 1fr); }
+body.focus-mode .editor-panel { min-height: calc(100vh - 36px); }
+body.focus-mode #chapterEditor { min-height: calc(100vh - 240px); }
+
+/* 段落高亮层从 textarea 背景下透出：专注模式下编辑器背景转透明 */
+body.focus-mode #chapterEditor { background: transparent; }
+
+/* 编辑器定位到高亮层之上（同为定位元素时按 DOM 顺序，textarea 在后已胜出，
+   显式 z-index 防止将来调整 DOM 顺序后层级翻转） */
+#chapterEditor { position: relative; z-index: 1; }
+
+/* F090：.editor-panel 是段落镜像层的定位基准 */
+.editor-panel { position: relative; }
+
+/* 字号/行宽偏好经 --editor-* 变量下发；后置规则覆盖旧 font 简写中的字号 */
+#chapterEditor {
+  font-size: var(--editor-font-size, 18px);
+  max-width: var(--editor-max-width, 100%);
+  margin-inline: auto;
+}
+
+.editor-paragraph-layer {
+  position: absolute;
+  z-index: 0;
+  display: none;
+  overflow: hidden;
+  padding: 24px;
+  border: 1px solid transparent;
+  border-radius: 22px;
+  color: transparent;
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 500 var(--editor-font-size, 18px) / 1.9 "Noto Serif SC", serif;
+  max-width: var(--editor-max-width, 100%);
+  margin-inline: auto;
+}
+
+/* 镜像层只在专注模式参与绘制；文字全透明，只有 mark 的底色可见 */
+body.focus-mode .editor-paragraph-layer { display: block; }
+
+.editor-paragraph-layer mark.active-paragraph {
+  color: transparent;
+  background: rgba(139, 92, 246, 0.2);
+  border-radius: 6px;
+  box-shadow: 0 0 0 6px rgba(139, 92, 246, 0.06);
+}
+
+/* ══════════ F091 力导向图谱 ══════════ */
+
+/* 视口容器：世界坐标经 translate(pan) + scale 缩放映射到屏幕 */
+.graph-viewport {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+/* 边画在世界坐标里（可为负值），svg 本体只是 1px 锚点，内容溢出照常绘制 */
+.graph-edges { overflow: visible; }
+
+/* 力学迭代每帧只更新 transform，提前提层避免反复重排 */
+.node {
+  max-width: 170px;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  user-select: none;
+  will-change: transform;
+}
+
+/* 拖拽后钉住的节点：虚线描边 + 图钉角标，双击解除 */
+.node.pinned { border-style: dashed; border-color: var(--warning); }
+
+.node.pinned::after {
+  content: "📌";
+  position: absolute;
+  top: -12px;
+  right: -4px;
+  font-size: 14px;
+}
+
+/* 触屏拖拽需要接管默认手势，否则 pointermove 会被滚动打断 */
+.node-map { touch-action: none; cursor: grab; }
+.node-map:active { cursor: grabbing; }
+
+.graph-hint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.graph-empty {
+  padding: 40px 24px;
+  color: var(--muted);
+  text-align: center;
+}
