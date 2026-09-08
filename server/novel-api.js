@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
-import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteKnowledge, exportChapter, exportProject, get, getAiProject, getBootstrapData, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getProjectKeyMeta, getRecallForChapter, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
+import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createMilestone, createProject, deleteKnowledge, endWritingSession, exportChapter, exportProject, get, getAiProject, getBootstrapData, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getProjectKeyMeta, getRecallForChapter, getWritingSessionStats, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, startWritingSession, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { resolveProjectId } from './novel-project.js';
 import { runAiTask, streamAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
@@ -107,6 +107,30 @@ async function handle(req, res) {
       return send(res, 201, { progress: addWritingProgress({ projectId, words: Number(body.words || 0), note: body.note || '' }) });
     }
 
+    // ── F086 写作会话：前端在页面载入/切章/每 5 分钟滚动开启会话，
+    // 结束（离开/切章/滚动）时落库一次 —— 不逐键写库，SQLite 才不会被高频 UPDATE 打爆。
+    if (req.method === 'POST' && url.pathname === '/api/novel/sessions/start') {
+      const body = await readJson(req);
+      const session = startWritingSession({
+        projectId,
+        chapterId: body.chapterId ? Number(body.chapterId) : null,
+        startWords: Number(body.startWords || 0)
+      });
+      return send(res, 201, { session });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/sessions/end') {
+      const body = await readJson(req);
+      const session = endWritingSession({ sessionId: Number(body.sessionId || 0), endWords: Number(body.endWords || 0) });
+      return session ? send(res, 200, { session }) : send(res, 404, { error: 'session not found' });
+    }
+
+    // 连续打卡 + 日历热力图聚合（周数可配，默认 12 周，对标 GitHub contributions）
+    if (req.method === 'GET' && url.pathname === '/api/novel/sessions/stats') {
+      const weeks = Math.min(52, Math.max(4, Number(url.searchParams.get('weeks') || 12)));
+      return send(res, 200, { stats: getWritingSessionStats({ projectId, weeks }) });
+    }
+
     // F075：apiKey 三态 —— 非空则加密覆盖；空/不传则保持原值；'__CLEAR__' 则清空
     if (req.method === 'POST' && url.pathname === '/api/novel/settings/ai') {
       const body = await readJson(req);
@@ -185,6 +209,18 @@ async function handle(req, res) {
       return chapter ? send(res, 200, { chapter }) : send(res, 404, { error: 'chapter not found' });
     }
 
+    // F086 里程碑快照：独立端点而不是给 /save 加 kind 参数 ——
+    // /save 的 kind='manual' 是 46 条既有测试明文验证的契约，不能被调用方覆盖。
+    // name 必填：里程碑的意义就在「作者主动命名的记号」，空名快照等于自动版本。
+    if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/chapters\/\d+\/milestone$/)) {
+      const chapterId = Number(url.pathname.split('/')[4]);
+      const body = await readJson(req);
+      const name = String(body.name || '').trim();
+      if (!name) return send(res, 400, { error: 'milestone name is required' });
+      const chapter = createMilestone({ chapterId, name, content: typeof body.content === 'string' ? body.content : undefined });
+      return chapter ? send(res, 201, { chapter }) : send(res, 404, { error: 'chapter not found' });
+    }
+
     if (req.method === 'GET' && url.pathname.match(/^\/api\/novel\/chapters\/\d+\/versions$/)) {
       const chapterId = Number(url.pathname.split('/')[4]);
       return send(res, 200, { versions: listChapterVersions(chapterId) });
@@ -211,7 +247,9 @@ async function handle(req, res) {
     if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/chapters\/\d+\/annotations$/)) {
       const chapterId = Number(url.pathname.split('/')[4]);
       const body = await readJson(req);
-      return send(res, 201, { annotation: addAnnotation({ chapterId, quote: body.quote || '', note: body.note || '', severity: body.severity || 'info' }) });
+      // F087：severity 已开放为表单字段，白名单校验防脏数据入库（默认 info）
+      const severity = ['info', 'warning', 'danger'].includes(body.severity) ? body.severity : 'info';
+      return send(res, 201, { annotation: addAnnotation({ chapterId, quote: body.quote || '', note: body.note || '', severity }) });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/todos') {
@@ -360,12 +398,15 @@ async function handle(req, res) {
           apiKey: secret.apiKey,
           apiKeyError: secret.error,
           context: {
-            promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
-            selectedText: body.selectedText || ''
-          },
-          recall,
-          memory,
-          forceMock: body.mock === true,
+          promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
+          selectedText: body.selectedText || '',
+          // F087：定向标记 —— selectedText 有值时前端置 targeted=true，
+          // provider 据此区分「真实选区」与「无选区时的正文前 1200 字回退」
+          targetedSelection: body.targeted === true
+        },
+        recall,
+        memory,
+        forceMock: body.mock === true,
           signal: abortState
         })) {
           if (event.type === 'done') { doneEvent = event; break; }
@@ -440,7 +481,8 @@ async function handle(req, res) {
         apiKeyError: secret.error,
         context: {
           promptTemplate: listPromptTemplates(projectId).find(prompt => prompt.task_type === (body.taskType || 'sync')),
-          selectedText: body.selectedText || ''
+          selectedText: body.selectedText || '',
+          targetedSelection: body.targeted === true
         },
         recall,
         memory

@@ -1007,6 +1007,133 @@ function listWritingProgress(projectId, limit = 14) {
   return all('SELECT * FROM writing_progress WHERE project_id = ? ORDER BY id DESC LIMIT ?', [projectId, limit]);
 }
 
+/* ════════════════════════════════════════════════════════════════════
+ * F086 写作会话：一次会话 = writing_sessions 一行。
+ *
+ * 为什么「开始」要兜底关闭历史未关闭会话：浏览器崩溃 / 直接关页面时，
+ * 前端的 end 请求（含 beforeunload 的 keepalive）都来不及发出，会留下
+ * ended_at 为空的行。兜底关闭发生在下次 start 时 —— 此时能拿到「当前
+ * 真实字数」当作 end_words 的最优估计，孤儿会话的 words_delta 不至于失真。
+ * ════════════════════════════════════════════════════════════════════ */
+
+/** 单项目同一时刻至多一个进行中会话（idx_sessions_open 依赖此约定） */
+function closeOrphanSessions(projectId, endWords, endedAt) {
+  const orphans = all('SELECT * FROM writing_sessions WHERE project_id = ? AND ended_at IS NULL', [projectId]);
+  for (const orphan of orphans) {
+    const duration = Math.max(0, Date.parse(endedAt) - Date.parse(orphan.started_at));
+    // 孤儿会话的真实结束字数不可考，用「现在」的字数做最优估计；
+    // words_delta 钳到 >=0：负值只可能是估计偏差，不该让热力图出现「倒扣」
+    const delta = Math.max(0, Number(endWords || 0) - orphan.start_words);
+    run(
+      'UPDATE writing_sessions SET ended_at = ?, duration_ms = ?, end_words = ?, words_delta = ?, updated_at = ? WHERE id = ?',
+      [endedAt, duration, Number(endWords || 0), delta, endedAt, orphan.id]
+    );
+  }
+  return orphans.length;
+}
+
+/**
+ * 开启一个写作会话。已存在的未关闭会话先兜底关闭（见 closeOrphanSessions）。
+ * @param {{projectId:number, chapterId?:number|null, startWords?:number}} params
+ * @returns {object} 新会话行
+ */
+function startWritingSession({ projectId, chapterId = null, startWords = 0 }) {
+  const timestamp = now();
+  closeOrphanSessions(projectId, Number(startWords || 0), timestamp);
+  // session_date 用本地日期（novel-date.js）：打卡/热力图统计的是「作者感知的一天」，
+  // 禁止 toISOString().slice(0,10)（UTC 日期，东八区清晨写作会被算到昨天）
+  const result = run(
+    'INSERT INTO writing_sessions (project_id, chapter_id, started_at, start_words, session_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [projectId, chapterId, timestamp, Number(startWords || 0), localDate(timestamp), timestamp, timestamp]
+  );
+  logAudit('session.start', { projectId, chapterId, sessionId: Number(result.lastInsertRowid) });
+  return get('SELECT * FROM writing_sessions WHERE id = ?', [Number(result.lastInsertRowid)]);
+}
+
+/**
+ * 结束写作会话（幂等：重复 end 或已关闭的会话原样返回，不二次累计时长）。
+ * @param {{sessionId:number, endWords?:number}} params
+ * @returns {object|null} 更新后的会话行；会话不存在返回 null
+ */
+function endWritingSession({ sessionId, endWords = 0 }) {
+  const session = get('SELECT * FROM writing_sessions WHERE id = ?', [Number(sessionId)]);
+  if (!session) return null;
+  if (session.ended_at) return session; // 幂等：前端重试 / 并发 end 不会重复计费
+  const endedAt = now();
+  const duration = Math.max(0, Date.parse(endedAt) - Date.parse(session.started_at));
+  const delta = Math.max(0, Number(endWords || 0) - session.start_words);
+  run(
+    'UPDATE writing_sessions SET ended_at = ?, duration_ms = ?, end_words = ?, words_delta = ?, updated_at = ? WHERE id = ?',
+    [endedAt, duration, Number(endWords || 0), delta, endedAt, session.id]
+  );
+  logAudit('session.end', { sessionId, durationMs: duration, wordsDelta: delta });
+  return get('SELECT * FROM writing_sessions WHERE id = ?', [session.id]);
+}
+
+/**
+ * 会话统计：连续打卡天数 + 热力图按日聚合。
+ *
+ * 连续天数规则（PRD F086）：今天或昨天有写作即视为「连续中」，再往前逐日回溯。
+ * 数据源合并 writing_sessions.session_date 与 writing_progress.progress_date
+ * （手动记录的进度也是「这一天写过」的证据，漏掉会低估连击）。
+ *
+ * @param {{projectId:number, weeks?:number}} params weeks：热力图覆盖的周数（默认 12 周，对标 GitHub contributions）
+ */
+function getWritingSessionStats({ projectId, weeks = 12 }) {
+  const days = Math.max(7, Number(weeks || 12) * 7);
+  const today = localDate();
+  const since = shiftDate(today, -(days - 1));
+
+  // 按日聚合会话（words_delta 已在写入时钳 >=0，热力图不会出现负格子）
+  const sessionRows = all(
+    `SELECT session_date AS date,
+            SUM(words_delta) AS words,
+            SUM(duration_ms) AS duration_ms,
+            COUNT(*)         AS sessions
+       FROM writing_sessions
+      WHERE project_id = ? AND session_date >= ?
+      GROUP BY session_date`,
+    [projectId, since]
+  );
+  // 手动打卡进度也计入热力图（同一日两类来源求和）
+  const progressRows = all(
+    'SELECT progress_date AS date, SUM(words) AS words FROM writing_progress WHERE project_id = ? AND progress_date >= ? GROUP BY progress_date',
+    [projectId, since]
+  );
+
+  /** @type {Map<string, {words:number, durationMs:number, sessions:number}>} */
+  const byDate = new Map();
+  for (const row of sessionRows) {
+    byDate.set(row.date, { words: Number(row.words || 0), durationMs: Number(row.duration_ms || 0), sessions: Number(row.sessions || 0) });
+  }
+  for (const row of progressRows) {
+    const merged = byDate.get(row.date) || { words: 0, durationMs: 0, sessions: 0 };
+    merged.words += Number(row.words || 0);
+    byDate.set(row.date, merged);
+  }
+
+  // 连续打卡：今天有写作 → 从今天回溯；今天没有 → 从昨天回溯（今天还没写不能立即断签）
+  const writingDates = new Set(byDate.keys());
+  let streak = 0;
+  let cursor = writingDates.has(today) ? today : shiftDate(today, -1);
+  while (writingDates.has(cursor)) {
+    streak += 1;
+    cursor = shiftDate(cursor, -1);
+  }
+
+  // 热力图逐日展开（无写作日补零），前端按周分列渲染 CSS 网格
+  const heatmap = [];
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = shiftDate(today, -offset);
+    const day = byDate.get(date) || { words: 0, durationMs: 0, sessions: 0 };
+    heatmap.push({ date, ...day });
+  }
+  const totalWords = heatmap.reduce((sum, day) => sum + day.words, 0);
+  const totalDurationMs = heatmap.reduce((sum, day) => sum + day.durationMs, 0);
+  const totalSessions = heatmap.reduce((sum, day) => sum + day.sessions, 0);
+  return { streak, heatmap, totalWords, totalDurationMs, totalSessions, todayWords: byDate.get(today)?.words || 0 };
+}
+
 function addAiFeedback({ taskId, rating, note }) {
   const timestamp = now();
   const result = run('INSERT INTO ai_feedback (task_id, rating, note, created_at) VALUES (?, ?, ?, ?)', [taskId, rating, note, timestamp]);
@@ -1776,4 +1903,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createProject, deleteEntityAlias, deleteKnowledge, exportChapter, exportProject, getBootstrapData, get, getAiProject, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getRecallForChapter, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createMilestone, createProject, deleteEntityAlias, deleteKnowledge, endWritingSession, exportChapter, exportProject, getBootstrapData, get, getAiProject, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getRecallForChapter, getWritingSessionStats, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, startWritingSession, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };

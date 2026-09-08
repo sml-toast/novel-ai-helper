@@ -197,6 +197,11 @@ function buildPrompt({ taskType, project, chapter, context, recall = [], memory 
   lines.push(`【正文】${bodyText}`);
   if (context?.selectedText) {
     lines.push(`【作者选区】${context.selectedText}`);
+    // F087：targeted=true 表示 selectedText 是作者真实划选的内容（而非正文回退），
+    // 此时明确要求围绕选区输出 —— 23 个 AI 按钮中的定向类功能（润色/改写/对白检查等）才真正可用
+    if (context.targetedSelection) {
+      lines.push('【定向指令】作者划选了上述内容，请针对选区本身输出，不要泛化到整章。');
+    }
   }
 
   // L5 任务层

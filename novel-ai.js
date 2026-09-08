@@ -262,6 +262,8 @@ async function loadBootstrap() {
   renderAll();
   // F075：密钥状态提示（含主密钥备份引导）
   renderAiKeyStatus();
+  // F086：项目数据就绪后开启写作会话（失败静默，见 startWritingSession）
+  startWritingSession();
 }
 
 function renderAll() {
@@ -312,7 +314,8 @@ function renderEditor() {
 }
 
 function updateWordCount() {
-  wordCount.textContent = editor.value.replace(/\s/g, '').length.toString();
+  // F086：与会话统计共用同一口径（currentWordTotal），避免两处字数对不上
+  wordCount.textContent = currentWordTotal().toString();
 }
 
 /* ==========================================================================
@@ -576,7 +579,10 @@ async function switchChapter(chapterId) {
   if (activeChapter && next.id === activeChapter.id) return;
 
   if (!(await confirmDirtyLeave('切换章节'))) return;
+  // F086：会话按章节分段 —— 切章即 end 旧行、start 新行，字数增量不跨章混算
+  await endWritingSession();
   adoptChapter(next);
+  await startWritingSession(next.id);
 }
 
 /**
@@ -590,6 +596,8 @@ async function switchProject(nextProjectId) {
     renderProjectSwitcher();
     return;
   }
+  // F086：切项目结束当前会话；新会话由 loadBootstrap 成功后统一开启
+  await endWritingSession();
   currentProjectId = nextProjectId;
   await loadBootstrap();
 }
@@ -624,6 +632,95 @@ function adoptChapter(chapter) {
   const knowledgeDrawer = document.querySelector('#knowledgeDrawer');
   if (knowledgeDrawer && knowledgeDrawer.classList.contains('open')) loadChapterMentions();
 }
+
+/* ==========================================================================
+ * F086 写作会话：会话计时与字数增量
+ *
+ * 为什么不每敲一个字都写库：3s 防抖的草稿保存已经高频 UPDATE 主表了，
+ * 会话再逐键落库只会把 SQLite 打成瓶颈。策略是**前端累计、结束才落库**：
+ *   开始（页面载入/切章）→ POST /sessions/start
+ *   结束（切章/切项目/滚动 5 分钟/关页面）→ POST /sessions/end
+ * 滚动开启 = end 后立即 start，字数基线随之重置，单行会话时长不会失真。
+ * 浏览器崩溃留下的未关闭会话由服务端在下次 start 时兜底关闭（novel-db.js）。
+ * ========================================================================== */
+
+const SESSION_FLUSH_MS = 5 * 60 * 1000; // 每 5 分钟滚动一次会话
+
+const sessionMeter = document.querySelector('#sessionMeter');
+const sessionDurationEl = document.querySelector('#sessionDuration');
+const sessionDeltaEl = document.querySelector('#sessionDelta');
+
+/** @type {{id:number|null, startedAt:number, startWords:number, startedAtMs:number}} */
+const writingSession = { id: null, startedAt: 0, startWords: 0, startedAtMs: 0 };
+
+/** 当前编辑器正文字数（与 updateWordCount 同口径：去空白） */
+function currentWordTotal() {
+  return editor.value.replace(/\s/g, '').length;
+}
+
+function renderSessionMeter() {
+  if (!sessionMeter || writingSession.id == null) return;
+  const elapsedMs = Math.max(0, Date.now() - writingSession.startedAtMs);
+  const minutes = Math.floor(elapsedMs / 60000);
+  const seconds = Math.floor((elapsedMs % 60000) / 1000);
+  const delta = Math.max(0, currentWordTotal() - writingSession.startWords);
+  sessionDurationEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  sessionDeltaEl.textContent = `+${delta} 字`;
+}
+
+/** 开启会话（幂等：已有进行中会话时不重复开）。失败静默 —— 统计不构成主流程。 */
+async function startWritingSession(chapterId = activeChapter ? activeChapter.id : null) {
+  if (!apiOnline || writingSession.id != null) return;
+  try {
+    const result = await apiFetch('/sessions/start', {
+      method: 'POST',
+      body: JSON.stringify({ chapterId, startWords: currentWordTotal() })
+    });
+    writingSession.id = result.session.id;
+    writingSession.startWords = Number(result.session.start_words || 0);
+    writingSession.startedAtMs = Date.now();
+    if (sessionMeter) sessionMeter.hidden = false;
+    renderSessionMeter();
+  } catch (error) {
+    log('WARN', 'SESSION', `会话开启失败：${error.message}`);
+  }
+}
+
+/**
+ * 结束会话并落库。keepalive=true 用于 beforeunload：
+ * 页面卸载后 fetch 仍会完成，是「关页面也记上一笔」的唯一零依赖手段。
+ */
+async function endWritingSession({ keepalive = false } = {}) {
+  if (writingSession.id == null) return;
+  const sessionId = writingSession.id;
+  writingSession.id = null;
+  const request = apiFetch('/sessions/end', {
+    method: 'POST',
+    keepalive,
+    body: JSON.stringify({ sessionId, endWords: currentWordTotal() })
+  });
+  if (keepalive) return; // 页面正在卸载，不等待也不报告
+  try {
+    await request;
+  } catch (error) {
+    log('WARN', 'SESSION', `会话落库失败：${error.message}`);
+  } finally {
+    if (sessionMeter) sessionMeter.hidden = true;
+  }
+}
+
+/** 滚动会话：end 当前 → 立即 start 新会话（字数基线重置，时长不失真） */
+async function rolloverWritingSession() {
+  await endWritingSession();
+  await startWritingSession();
+}
+
+setInterval(() => {
+  if (writingSession.id != null) renderSessionMeter();
+}, 1000);
+setInterval(() => {
+  if (apiOnline && writingSession.id != null) rolloverWritingSession();
+}, SESSION_FLUSH_MS);
 
 /* ==========================================================================
  * 通用确认弹窗（切章拦截 / 草稿合并 / 密钥清除 共用）
@@ -957,6 +1054,47 @@ function flashAssist(title, body, tone = '') {
 }
 
 /**
+ * F087 修复：捕获编辑器里的**真实选区**。
+ *
+ * 为什么不直接用 window.getSelection()：编辑器是 <textarea>，其内部选区
+ * 不属于文档级选区 —— window.getSelection().toString() 对 textarea 恒为空串，
+ * 必须从 selectionStart/selectionEnd 取。页面级选区只在「锚点确实落在编辑器
+ * 元素内」时才采信（将来换成 contenteditable 的兜底）——否则点过 AI 按钮后
+ * 残留的旧文档选区会被误判为定向（实测踩过：清掉 textarea 选区后 targeted 仍为 true）。
+ *
+ * 无选区时回退到既有策略（正文前 1200 字），保证未定向的任务行为不变。
+ * @returns {{text: string, targeted: boolean}} targeted=true 表示作者真的划选了内容
+ */
+function getEditorSelection() {
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  if (Number.isInteger(start) && Number.isInteger(end) && end > start) {
+    const text = editor.value.slice(start, end);
+    if (text.trim()) return { text, targeted: true };
+  }
+  if (typeof window.getSelection === 'function') {
+    const selection = window.getSelection();
+    // 只认「锚点在编辑器内」的文档选区，避免把页面其他区域的选中内容当成正文选区
+    if (selection && selection.rangeCount && editor.contains(selection.anchorNode)) {
+      const text = String(selection);
+      if (text.trim()) return { text, targeted: true };
+    }
+  }
+  return { text: editor.value.slice(0, 1200), targeted: false };
+}
+
+/** 组装 AI 请求体：selectedText 传真实选区，targeted 标记「是否定向」供后端感知 */
+function buildAiPayload(taskType) {
+  const selection = getEditorSelection();
+  return {
+    taskType,
+    chapterId: activeChapter ? activeChapter.id : null,
+    selectedText: selection.text,
+    targeted: selection.targeted
+  };
+}
+
+/**
  * AI 任务统一走流式通道（F082/T015）：实时卡 + 可中断。
  * SSE 帧：meta（引用/截断信息，用于「引用来源」卡）→ delta（增量）→ done（终态多卡）/ error。
  * 断流自动降级：/stream 不可达时回落 JSON 通道 /ai（双通道并存，design C）。
@@ -994,7 +1132,8 @@ async function runAi(taskType) {
     const response = await fetch(`${apiBase}/ai/stream`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ taskType, chapterId: activeChapter ? activeChapter.id : null, selectedText: editor.value.slice(0, 1200) }),
+      // F087：selectedText 是编辑器真实选区（无选区回退正文前 1200 字），targeted 标记定向
+      body: JSON.stringify(buildAiPayload(taskType)),
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`API ${response.status}`);
@@ -1049,7 +1188,7 @@ async function runAi(taskType) {
     try {
       const result = await apiFetch('/ai', {
         method: 'POST',
-        body: JSON.stringify({ taskType, chapterId: activeChapter ? activeChapter.id : null, selectedText: editor.value.slice(0, 1200) })
+        body: JSON.stringify(buildAiPayload(taskType))
       });
       showRefsCard(result);
       result.items.slice().reverse().forEach(item => flashAssist(item.title, item.body, item.tone));
@@ -1070,6 +1209,7 @@ async function createProject() {
  * 新建项目向导（F079）：侧栏「新建」按钮的入口。
  * 弹窗收集标题/题材 → 创建 → 自动切换。模态框关闭后 innerHTML 仍在，
  * 因此在 confirmDirtyLeave（可能开第二个弹窗）之前先把输入值读出来。
+ * F087：worldView / targetPlatform / writingStyle 开放录入，不再写死假数据。
  */
 async function newProjectWizard() {
   if (!apiOnline) return flashAssist('新建项目', 'API 未启动，无法写入 SQLite。', 'warning');
@@ -1078,6 +1218,9 @@ async function newProjectWizard() {
     bodyHtml: `<div class="form-grid">
         <input id="newProjectTitleInput" type="text" placeholder="项目标题（默认：未命名小说）" />
         <input id="newProjectGenreInput" type="text" placeholder="题材（默认：类型待定）" />
+        <input id="newProjectWorldViewInput" type="text" placeholder="世界观（可留空，默认「待补充世界观。」）" />
+        <input id="newProjectPlatformInput" type="text" placeholder="目标平台（默认：模拟平台 A）" />
+        <input id="newProjectStyleInput" type="text" placeholder="写作风格（默认：强钩子、快节奏、画面感）" />
       </div>`,
     actions: [
       { label: '创建', value: 'create', variant: 'primary-btn' },
@@ -1087,21 +1230,18 @@ async function newProjectWizard() {
   if (choice !== 'create') return;
   const title = document.querySelector('#newProjectTitleInput')?.value.trim() || '';
   const genre = document.querySelector('#newProjectGenreInput')?.value.trim() || '';
-  await createProjectAndSwitch({ title, genre });
+  const worldView = document.querySelector('#newProjectWorldViewInput')?.value.trim() || '';
+  const targetPlatform = document.querySelector('#newProjectPlatformInput')?.value.trim() || '';
+  const writingStyle = document.querySelector('#newProjectStyleInput')?.value.trim() || '';
+  await createProjectAndSwitch({ title, genre, worldView, targetPlatform, writingStyle });
 }
 
-/** 创建并切换（F079）。settings 表单与侧栏向导共用。 */
-async function createProjectAndSwitch({ title, genre }) {
+/** 创建并切换（F079）。settings 表单与侧栏向导共用；F087 后各字段留空即回落服务端默认。 */
+async function createProjectAndSwitch({ title, genre, worldView = '', targetPlatform = '', writingStyle = '' }) {
   try {
     const result = await apiFetch('/projects', {
       method: 'POST',
-      body: JSON.stringify({
-        title,
-        genre,
-        worldView: '新项目世界观待 AI 辅助扩展。',
-        targetPlatform: '模拟平台 A',
-        writingStyle: '强钩子、快节奏、画面感'
-      })
+      body: JSON.stringify({ title, genre, worldView, targetPlatform, writingStyle })
     });
     // 创建后直接切换到新项目（复用 dirty 拦截；若用户在拦截里取消，
     // 项目已创建但不切换，消息按实际结果区分）
@@ -1148,6 +1288,53 @@ async function importKnowledge() {
   }
 }
 
+/**
+ * F086 里程碑快照：作者主动命名打点（对标 Scrivener Snapshot）。
+ * 入口两处 —— 编辑器顶栏「★ 打快照」与版本面板头部，动线一致。
+ * content 传编辑器当前值：大改前打快照要留住的就是屏幕上这一版。
+ */
+async function createMilestoneSnapshot() {
+  if (!apiOnline) return flashAssist('里程碑快照', 'API 未启动，无法打快照。', 'warning');
+  if (!activeChapter) return;
+  const choice = await showModal({
+    title: '打里程碑快照',
+    bodyHtml: `<p>给当前这一版起个名字（如「大改前」「定稿 v1」）。快照会进入版本历史，
+      随时可回滚。</p>
+      <div class="form-grid"><input id="milestoneNameInput" type="text" placeholder="快照名称（必填）" /></div>`,
+    actions: [
+      { label: '打快照', value: 'ok', variant: 'primary-btn' },
+      { label: '取消', value: 'cancel' }
+    ]
+  });
+  if (choice !== 'ok') return;
+  const name = document.querySelector('#milestoneNameInput')?.value.trim();
+  if (!name) return flashAssist('里程碑快照', '快照名称为空，未打点。', 'warning');
+  try {
+    const result = await apiFetch(`/chapters/${activeChapter.id}/milestone`, {
+      method: 'POST',
+      body: JSON.stringify({ name, content: editor.value })
+    });
+    activeChapter = result.chapter;
+    state.chapters = state.chapters.map(chapter => chapter.id === activeChapter.id ? activeChapter : chapter);
+    // 不走 renderEditor（会清掉打快照之后的新输入），只对齐保存基线
+    lastSavedContent = result.chapter.content;
+    setSaveState(editor.value === lastSavedContent ? 'saved' : 'unsaved');
+    if (saveState === 'unsaved') scheduleAutoSave();
+    renderChapters();
+    await loadVersions();
+    flashAssist('里程碑快照已留存', `★ ${name}（版本 ${activeChapter.version}）已写入版本历史。`);
+  } catch (error) {
+    flashAssist('里程碑快照失败', error.message, 'danger');
+  }
+}
+
+/** 版本 kind 的中文标签与视觉分组（F086：自动版本 / 手动存稿 / 里程碑 快照三分） */
+const VERSION_KIND_META = {
+  auto: { label: '自动版本', className: 'version-kind-auto' },
+  manual: { label: '手动存稿', className: 'version-kind-manual' },
+  milestone: { label: '里程碑快照', className: 'version-kind-milestone' }
+};
+
 async function loadVersions() {
   const list = document.querySelector('#versionList');
   if (!apiOnline) {
@@ -1156,13 +1343,20 @@ async function loadVersions() {
   }
   try {
     const result = await apiFetch(`/chapters/${activeChapter.id}/versions`);
-    list.innerHTML = result.versions.map(version => `
-      <article class="version-card">
-        <h3>版本 ${escapeHtml(String(version.version))}</h3>
+    list.innerHTML = result.versions.map(version => {
+      const kind = VERSION_KIND_META[version.kind] || VERSION_KIND_META.manual;
+      // 里程碑用 ★ + 作者命名醒目标记，与顺手存一眼区分开（PRD F086 ④）
+      const title = version.kind === 'milestone'
+        ? `★ ${version.name || '未命名里程碑'}`
+        : `版本 ${version.version}`;
+      return `
+      <article class="version-card ${kind.className}">
+        <span class="version-kind">${escapeHtml(kind.label)}</span>
+        <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(version.content.slice(0, 90))}${version.content.length > 90 ? '...' : ''}</p>
         <button type="button" data-version="${escapeHtml(String(version.version))}">回滚到此版本</button>
-      </article>
-    `).join('');
+      </article>`;
+    }).join('');
   } catch (error) {
     flashAssist('版本加载失败', error.message, 'danger');
   }
@@ -1202,8 +1396,9 @@ async function savePlatform() {
       method: 'POST',
       body: JSON.stringify({
         platform,
-        accountName: '本地作者号',
-        rules: '每日 21:30 推送，章节末尾保留互动问题，移动端优先短句。'
+        // F087：账号名/规则开放录入，留空回落服务端既有默认
+        accountName: document.querySelector('#platformAccountInput')?.value.trim() || '',
+        rules: document.querySelector('#platformRulesInput')?.value.trim() || ''
       })
     });
     flashAssist('平台配置已保存', `${result.platform.platform} · ${result.platform.account_name}`);
@@ -1216,13 +1411,19 @@ async function savePlatform() {
 async function schedulePublish() {
   const platform = document.querySelector('#platformNameInput').value.trim();
   if (!apiOnline) return flashAssist('定时发布', 'API 未启动，无法创建发布任务。', 'warning');
+  // F087：发布时间开放选择（datetime-local），不再是写死的「+1 小时」。
+  // 留空才回落 +1h（保守兜底，避免误发一个立刻触发的任务）；datetime-local
+  // 无时区后缀，按本地时区解析，与「作者感知的推送时间」一致。
+  const scheduledInput = document.querySelector('#scheduledAtInput')?.value;
+  const scheduledAt = scheduledInput
+    ? new Date(scheduledInput).toISOString()
+    : new Date(Date.now() + 60 * 60 * 1000).toISOString();
   try {
-    const scheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     await apiFetch('/publish', { method: 'POST', body: JSON.stringify({ chapterId: activeChapter.id, platform, scheduledAt }) });
     const result = await apiFetch('/publish');
     state.publishTasks = result.tasks;
     renderPublishBoard(result.tasks);
-    flashAssist('定时发布已创建', `${activeChapter.title} 将推送到 ${platform}。`);
+    flashAssist('定时发布已创建', `${activeChapter.title} 将于 ${formatDateTime(scheduledAt)} 推送到 ${platform}。`);
     refreshDashboard();
   } catch (error) {
     flashAssist('定时发布失败', error.message, 'danger');
@@ -1235,6 +1436,7 @@ async function refreshDashboard() {
   if (!apiOnline) {
     container.innerHTML = renderStatCards({ chapterCount: state.chapters.length, knowledgeCount: 6, aiTaskCount: 0, publishWaiting: state.publishTasks.length, relationCount: state.relations.length });
     renderProgress([], { goal: { daily_words: 3000, note: '本地演示目标' }, todayWords: 0 });
+    renderStreakHeatmap(null);
     return;
   }
   try {
@@ -1243,6 +1445,56 @@ async function refreshDashboard() {
     renderProgress(result.progress, result.stats);
   } catch {
     container.innerHTML = '<div class="stat-card"><strong>--</strong><span>统计加载失败</span></div>';
+  }
+  // F086：连续打卡 + 热力图单独取数（/dashboard 契约不动，既有测试零影响）
+  try {
+    const stats = await apiFetch('/sessions/stats?weeks=12');
+    renderStreakHeatmap(stats.stats);
+  } catch (error) {
+    renderStreakHeatmap(null, error.message);
+  }
+}
+
+/** 热力图格子分级：0 / 1-199 / 200-799 / 800-1999 / ≥2000 字，对标 GitHub contributions */
+function heatmapLevel(words) {
+  if (words <= 0) return 0;
+  if (words < 200) return 1;
+  if (words < 800) return 2;
+  if (words < 2000) return 3;
+  return 4;
+}
+
+/**
+ * 渲染连续打卡天数与 12 周热力图（零依赖 CSS 网格）。
+ * 布局：每列一周、列内 7 格按星期排布（0=周日），首尾列用空占位补齐 ——
+ * 与 GitHub contributions 同构，纯 grid 不需要任何图表库。
+ * @param {{streak:number, heatmap:Array}|null} stats null 时展示占位（离线/接口失败）
+ * @param {string} [errorMessage]
+ */
+function renderStreakHeatmap(stats, errorMessage) {
+  const grid = document.querySelector('#heatmapGrid');
+  const streakEl = document.querySelector('#streakValue');
+  if (!grid) return;
+  if (streakEl) streakEl.textContent = stats ? String(stats.streak) : '--';
+  if (!stats) {
+    grid.innerHTML = `<span class="heatmap-empty">${errorMessage ? `热力图加载失败：${escapeHtml(errorMessage)}` : 'API 未启动，暂无打卡数据。'}</span>`;
+    return;
+  }
+  // 先平铺成一维格子序列：开头按第一天的星期补空占位（0=周日），
+  // 结尾补齐到 7 的倍数，再按每 7 格切一列 —— 每列天然是完整一周
+  const leadingBlanks = new Date(`${stats.heatmap[0].date}T12:00:00`).getDay();
+  const cells = [];
+  for (let pad = 0; pad < leadingBlanks; pad += 1) cells.push('<span class="heatmap-cell empty"></span>');
+  for (const day of stats.heatmap) {
+    const level = heatmapLevel(day.words);
+    const title = `${day.date} · ${day.words} 字${day.sessions ? ` · ${day.sessions} 次会话` : ''}`;
+    cells.push(`<span class="heatmap-cell level-${level}" title="${escapeHtml(title)}"></span>`);
+  }
+  while (cells.length % 7 !== 0) cells.push('<span class="heatmap-cell empty"></span>');
+
+  grid.innerHTML = '';
+  for (let offset = 0; offset < cells.length; offset += 7) {
+    grid.insertAdjacentHTML('beforeend', `<span class="heatmap-col">${cells.slice(offset, offset + 7).join('')}</span>`);
   }
 }
 
@@ -1314,7 +1566,15 @@ async function loadAudit() {
 async function saveGoal() {
   if (!apiOnline) return flashAssist('写作目标', 'API 未启动，无法保存目标。', 'warning');
   try {
-    await apiFetch('/goals', { method: 'POST', body: JSON.stringify({ dailyWords: Number(document.querySelector('#dailyGoalInput').value || 0), deadline: '2026-08-31', note: '保持稳定日更节奏。' }) });
+    // F087：deadline/note 开放录入，留空回落服务端既有默认
+    await apiFetch('/goals', {
+      method: 'POST',
+      body: JSON.stringify({
+        dailyWords: Number(document.querySelector('#dailyGoalInput').value || 0),
+        deadline: document.querySelector('#goalDeadlineInput')?.value || '',
+        note: document.querySelector('#goalNoteInput')?.value.trim() || ''
+      })
+    });
     flashAssist('写作目标已保存', '每日目标已更新。');
     refreshDashboard();
   } catch (error) {
@@ -1378,7 +1638,8 @@ async function addAnnotation() {
       body: JSON.stringify({
         quote: document.querySelector('#annotationQuoteInput').value.trim(),
         note: document.querySelector('#annotationNoteInput').value.trim(),
-        severity: 'info'
+        // F087：严重度改为表单选择（服务端白名单校验）
+        severity: document.querySelector('#annotationSeverityInput')?.value || 'info'
       })
     });
     flashAssist('章节批注已保存', result.annotation.note);
@@ -1402,7 +1663,11 @@ async function loadAnnotations() {
 async function addTodo() {
   if (!apiOnline) return flashAssist('创作待办', 'API 未启动，无法保存待办。', 'warning');
   try {
-    const result = await apiFetch('/todos', { method: 'POST', body: JSON.stringify({ title: document.querySelector('#todoTitleInput').value.trim(), dueAt: '2026-07-20' }) });
+    // F087：截止日开放录入；留空传 null = 无截止（不再写死 2026-07-20）
+    const result = await apiFetch('/todos', {
+      method: 'POST',
+      body: JSON.stringify({ title: document.querySelector('#todoTitleInput').value.trim(), dueAt: document.querySelector('#todoDueInput')?.value || null })
+    });
     flashAssist('创作待办已新增', result.todo.title);
     loadTodos();
   } catch (error) {
@@ -1435,7 +1700,9 @@ async function addGlossary() {
   if (!apiOnline) return flashAssist('术语表', 'API 未启动，无法保存术语。', 'warning');
   try {
     const term = document.querySelector('#glossaryTermInput').value.trim();
-    const result = await apiFetch('/glossary', { method: 'POST', body: JSON.stringify({ term, definition: '由作者手动记录的项目设定词条。', category: '设定' }) });
+    // F087：释义开放录入，留空回落服务端默认
+    const definition = document.querySelector('#glossaryDefinitionInput')?.value.trim() || '';
+    const result = await apiFetch('/glossary', { method: 'POST', body: JSON.stringify({ term, definition, category: '设定' }) });
     flashAssist('术语已新增', result.term.term);
     loadGlossary();
   } catch (error) {
@@ -1476,8 +1743,9 @@ async function addCharacter() {
       body: JSON.stringify({
         name: document.querySelector('#characterNameInput').value.trim(),
         role: document.querySelector('#characterRoleInput').value.trim(),
-        motivation: '追查黑潮真实来源。',
-        arc: '从旁观研究者转为关键见证者。'
+        // F087：动机/成长弧开放录入，留空回落服务端默认（待补充/待设计）
+        motivation: document.querySelector('#characterMotivationInput')?.value.trim() || '',
+        arc: document.querySelector('#characterArcInput')?.value.trim() || ''
       })
     });
     flashAssist('角色已新增', result.character.name);
@@ -1503,7 +1771,12 @@ async function addTimeline() {
   try {
     const result = await apiFetch('/timeline', {
       method: 'POST',
-      body: JSON.stringify({ eventTime: document.querySelector('#timelineTimeInput').value.trim(), title: document.querySelector('#timelineTitleInput').value.trim(), description: '由作者手动记录的关键事件。' })
+      body: JSON.stringify({
+        eventTime: document.querySelector('#timelineTimeInput').value.trim(),
+        title: document.querySelector('#timelineTitleInput').value.trim(),
+        // F087：事件说明开放录入，留空回落服务端默认
+        description: document.querySelector('#timelineDescInput')?.value.trim() || ''
+      })
     });
     flashAssist('时间线已新增', result.event.title);
     loadTimeline();
@@ -1526,7 +1799,15 @@ async function loadTimeline() {
 async function addScene() {
   if (!apiOnline) return flashAssist('场景库', 'API 未启动，无法保存场景。', 'warning');
   try {
-    const result = await apiFetch('/scenes', { method: 'POST', body: JSON.stringify({ name: document.querySelector('#sceneNameInput').value.trim(), mood: document.querySelector('#sceneMoodInput').value.trim(), description: '场景细节待后续扩写。' }) });
+    // F087：场景说明开放录入，留空回落服务端默认
+    const result = await apiFetch('/scenes', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: document.querySelector('#sceneNameInput').value.trim(),
+        mood: document.querySelector('#sceneMoodInput').value.trim(),
+        description: document.querySelector('#sceneDescInput')?.value.trim() || ''
+      })
+    });
     flashAssist('场景已新增', result.scene.name);
     loadScenes();
   } catch (error) {
@@ -1548,7 +1829,15 @@ async function loadScenes() {
 async function addWorld() {
   if (!apiOnline) return flashAssist('世界观设定', 'API 未启动，无法保存设定。', 'warning');
   try {
-    const result = await apiFetch('/world', { method: 'POST', body: JSON.stringify({ category: document.querySelector('#worldCategoryInput').value.trim(), title: document.querySelector('#worldTitleInput').value.trim(), content: '该设定用于约束后续剧情与角色行为。' }) });
+    // F087：设定内容开放录入，留空回落服务端默认
+    const result = await apiFetch('/world', {
+      method: 'POST',
+      body: JSON.stringify({
+        category: document.querySelector('#worldCategoryInput').value.trim(),
+        title: document.querySelector('#worldTitleInput').value.trim(),
+        content: document.querySelector('#worldContentInput')?.value.trim() || ''
+      })
+    });
     flashAssist('世界观设定已新增', result.setting.title);
     loadWorld();
   } catch (error) {
@@ -2008,6 +2297,7 @@ document.addEventListener('click', event => {
 
   if (taskMap[action]) return runAi(taskMap[action]);
   if (action === 'save-draft') return saveDraft();
+  if (action === 'create-milestone') return createMilestoneSnapshot();
   if (action === 'search-knowledge') return searchKnowledge();
   if (action === 'refresh-graph') return refreshGraph();
   if (action === 'create-project') return createProject();
@@ -2067,6 +2357,8 @@ editor.addEventListener('input', () => {
 
 /* ── F076 离开页面守卫：有未保存内容时阻止关闭/刷新 ── */
 window.addEventListener('beforeunload', event => {
+  // F086：关页面前用 keepalive 尽力把会话落库（服务端还会兜底关闭孤儿会话）
+  endWritingSession({ keepalive: true });
   if (!isDirty()) return;
   event.preventDefault();
   // 现代浏览器需要 returnValue 非空才会真正弹确认框

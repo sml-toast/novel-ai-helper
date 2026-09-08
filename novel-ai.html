@@ -112,8 +112,15 @@
               <h2 id="chapterTitle">第 12 章 · 钟楼下的背叛</h2>
               <!-- F076 五态保存指示器：saved / unsaved / saving / failed / local -->
               <span class="save-indicator" id="saveIndicator" data-state="saved">已保存</span>
+              <!-- F086 会话计时：本次会话时长与字数增量（前端累计，结束才落库） -->
+              <span class="session-meter" id="sessionMeter" hidden title="本次写作会话">
+                <strong id="sessionDuration">00:00</strong>
+                <em id="sessionDelta">+0 字</em>
+              </span>
             </div>
           <div class="toolbar-actions">
+              <!-- F086 大改前一键打快照（与版本面板「打快照」同入口） -->
+              <button type="button" class="milestone-btn" data-action="create-milestone" title="命名留存当前版本，大改前先打点">★ 打快照</button>
               <button type="button" data-action="framework">框架提炼</button>
               <button type="button" data-action="plot-extract">情节提炼</button>
               <button type="button" data-action="outline">章节构思</button>
@@ -230,6 +237,10 @@
             <input id="projectGenreInput" type="text" placeholder="题材" value="科幻悬疑" />
             <input id="chapterTitleInput" type="text" placeholder="新章节标题" value="第 13 章 · 地下海风" />
             <input id="platformNameInput" type="text" placeholder="平台名称" value="模拟平台 A" />
+            <!-- F087：账号名/平台规则/发布时间开放录入（此前写死「本地作者号」与固定规则、发布固定 +1h） -->
+            <input id="platformAccountInput" type="text" placeholder="平台账号名（默认：本地作者号）" />
+            <input id="platformRulesInput" type="text" placeholder="平台规则（默认沿用既有说明）" />
+            <input id="scheduledAtInput" type="datetime-local" title="定时发布时间（留空 = 1 小时后）" />
             <input id="knowledgeTitleInput" type="text" placeholder="知识标题" value="平台节奏规则" />
             <input id="knowledgeBodyInput" type="text" placeholder="知识内容" value="每章结尾保留一个动作钩子，避免连续解释设定。" />
           </div>
@@ -251,6 +262,8 @@
               <span class="eyebrow">Version History</span>
               <h2>章节版本与回滚</h2>
             </div>
+            <!-- F086：打快照入口放在版本面板头部 —— 「大改前打点」的动线就该发生在版本区 -->
+            <button class="ghost-btn milestone-btn" type="button" data-action="create-milestone">★ 打快照</button>
             <button class="ghost-btn" type="button" data-action="load-versions">查看版本</button>
           </div>
           <div class="version-list" id="versionList"></div>
@@ -268,12 +281,31 @@
           </div>
           <div class="stats-grid" id="dashboardStats"></div>
           <div class="goal-box">
+            <!-- F087：deadline/note 开放为表单字段（此前写死 2026-08-31 与固定文案） -->
             <input id="dailyGoalInput" type="number" value="3000" min="0" placeholder="每日目标字数" />
+            <input id="goalDeadlineInput" type="date" placeholder="目标截止日" />
+            <input id="goalNoteInput" type="text" placeholder="目标说明（可留空）" />
             <input id="progressWordsInput" type="number" value="1200" min="0" placeholder="今日新增字数" />
             <button type="button" data-action="save-goal">保存目标</button>
             <button type="button" data-action="add-progress">记录进度</button>
           </div>
           <div class="progress-list" id="progressList"></div>
+          <!-- F086 连续打卡 + 日历热力图（零依赖 CSS 网格，数据按本地日期聚合） -->
+          <div class="heatmap-box">
+            <div class="heatmap-head">
+              <span>连续写作 <strong id="streakValue">0</strong> 天</span>
+              <span class="heatmap-legend">
+                <em>少</em>
+                <span class="heatmap-cell level-0"></span>
+                <span class="heatmap-cell level-1"></span>
+                <span class="heatmap-cell level-2"></span>
+                <span class="heatmap-cell level-3"></span>
+                <span class="heatmap-cell level-4"></span>
+                <em>多</em>
+              </span>
+            </div>
+            <div class="heatmap-grid" id="heatmapGrid" aria-label="近 12 周写作热力图"></div>
+          </div>
         </article>
         <article class="panel ops-panel">
           <div class="panel-head large">
@@ -349,8 +381,18 @@
           <div class="form-grid">
             <input id="annotationQuoteInput" type="text" placeholder="批注原文" value="黑潮不是灾难，是归乡" />
             <input id="annotationNoteInput" type="text" placeholder="批注说明" value="核心主题句，注意后续回收" />
+            <!-- F087：严重度开放为选择项（此前写死 info） -->
+            <select id="annotationSeverityInput" aria-label="批注严重度">
+              <option value="info" selected>info · 提示</option>
+              <option value="warning">warning · 警告</option>
+              <option value="danger">danger · 高危</option>
+            </select>
             <input id="todoTitleInput" type="text" placeholder="创作待办" value="检查罗文背叛动机是否足够清晰" />
+            <!-- F087：截止日开放录入（此前写死 2026-07-20），可留空 = 无截止 -->
+            <input id="todoDueInput" type="date" aria-label="待办截止日期" />
             <input id="glossaryTermInput" type="text" placeholder="术语词条" value="归航者" />
+            <!-- F087：术语释义开放录入（此前写死固定文案） -->
+            <input id="glossaryDefinitionInput" type="text" placeholder="术语释义" value="完成归航仪式并获得航行记忆的幸存者" />
           </div>
           <div class="toolbar-actions">
             <button type="button" data-action="add-annotation">新增批注</button>
@@ -388,8 +430,13 @@
           <div class="form-grid">
             <input id="characterNameInput" type="text" placeholder="角色名" value="沈砚" />
             <input id="characterRoleInput" type="text" placeholder="角色定位" value="黑潮研究员" />
+            <!-- F087：动机/成长弧开放录入（此前写死示例文案） -->
+            <input id="characterMotivationInput" type="text" placeholder="角色动机（默认：待补充）" />
+            <input id="characterArcInput" type="text" placeholder="成长弧（默认：待设计）" />
             <input id="timelineTitleInput" type="text" placeholder="时间线事件" value="黑潮第一次回流" />
             <input id="timelineTimeInput" type="text" placeholder="事件时间" value="十年前" />
+            <!-- F087：事件说明开放录入（此前写死固定文案） -->
+            <input id="timelineDescInput" type="text" placeholder="事件说明（可留空）" />
           </div>
           <div class="toolbar-actions">
             <button type="button" data-action="add-character">新增角色</button>
@@ -409,8 +456,12 @@
           <div class="form-grid">
             <input id="sceneNameInput" type="text" placeholder="场景名" value="地下潮汐站" />
             <input id="sceneMoodInput" type="text" placeholder="场景氛围" value="潮湿、幽暗、机械轰鸣" />
+            <!-- F087：场景说明开放录入（此前写死固定文案） -->
+            <input id="sceneDescInput" type="text" placeholder="场景说明（可留空）" />
             <input id="worldTitleInput" type="text" placeholder="设定标题" value="归航者规则" />
             <input id="worldCategoryInput" type="text" placeholder="设定分类" value="身份规则" />
+            <!-- F087：设定内容开放录入（此前写死固定文案） -->
+            <input id="worldContentInput" type="text" placeholder="设定内容（可留空）" />
           </div>
           <div class="toolbar-actions">
             <button type="button" data-action="add-scene">新增场景</button>
