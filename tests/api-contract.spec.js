@@ -31,9 +31,24 @@ import {
   PROJECT_ROOT,
   TEST_DB_PATH,
 } from './test-env.js';
+// 只读引用迁移清单（不打开数据库、不执行任何迁移），用于推导「当前应有的
+// schema 版本」。这样以后每次新增迁移（v5、v6……）都不需要回来改断言数字。
+import { MIGRATIONS } from '../server/novel-migrate.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DB_PROBE = join(here, 'helpers', 'db-probe.mjs');
+
+/**
+ * 当前应有的 schema 版本 = 迁移清单里最后一个版本号。
+ *
+ * 为什么不写死数字：写死 1 之后 v2/v3/v4 每次都要同步改；
+ * 写死 4 之后 F086 的 v5 又会红。改成从 MIGRATIONS 推导后，
+ * 「新增迁移但忘了应用」依然会红（库里版本 < 期望版本），
+ * 而「正常新增迁移」不会再制造无意义的维护负担。
+ */
+const EXPECTED_SCHEMA_VERSION = MIGRATIONS.length
+  ? MIGRATIONS[MIGRATIONS.length - 1].version
+  : 0;
 
 /** 全局唯一标记：并发 worker 同时建章时，断言只统计「自己」的数据。 */
 function token(label) {
@@ -265,9 +280,9 @@ test.describe('API 契约 · 草稿态与版本态（F076）', () => {
 });
 
 test.describe('API 契约 · 迁移框架（T004）', () => {
-  test('13 迁移幂等：重复启动服务后 user_version 稳定为 4', async ({ request }) => {
-    // v1 密钥列+版本语义；v2 外键索引；v3 检索索引重建；v4 提及/别名表 + 回填
-    expect(readUserVersion(), '服务首次启动应已完成 v4 迁移').toBe(4);
+  test(`13 迁移幂等：重复启动服务后 user_version 稳定为 v${EXPECTED_SCHEMA_VERSION}`, async ({ request }) => {
+    // 期望版本从 MIGRATIONS 推导，新增迁移无需改动本用例。
+    expect(readUserVersion(), '服务首次启动应已完成全部迁移').toBe(EXPECTED_SCHEMA_VERSION);
 
     // 再「启动一次服务」：import novel-db.js 等价于 API 进程启动时的
     // initDb + migrate。若迁移不幂等（例如重复建索引未容错），
@@ -283,7 +298,7 @@ test.describe('API 契约 · 迁移框架（T004）', () => {
     );
     expect(restart.status, `第二次启动不应失败：${restart.stderr || ''}`).toBe(0);
 
-    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(4);
+    expect(readUserVersion(), '重复启动后 schema 版本号不应漂移').toBe(EXPECTED_SCHEMA_VERSION);
 
     // 幂等不等于可用：确认在线服务仍然正常响应。
     const res = await request.get(`${API_BASE}/api/novel/bootstrap`);

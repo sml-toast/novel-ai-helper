@@ -6,6 +6,7 @@ import { migrate, currentVersion } from './novel-migrate.js';
 import { decryptSecret, encryptSecret, maskSecret } from './novel-secret.js';
 import { buildMentionScanner } from './novel-mentions.js';
 import { scoreRecallCandidates } from './novel-recall.js';
+import { diffDays, localDate, shiftDate } from './novel-date.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, '..');
@@ -806,6 +807,35 @@ function saveChapter(chapterId, content) {
   syncSearchFts('chapter', chapterId, [chapter.title, content]);
   syncChapterMentions(chapterId);
   logAudit('chapter.save', { chapterId, version });
+  return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
+}
+
+/**
+ * 里程碑快照（F086，对标 Scrivener Snapshot）：作者**主动命名**打点。
+ *
+ * 与 saveChapter 的唯一区别是 kind/name：
+ *   - kind='manual'    —— 手动存稿（顺手存一下）
+ *   - kind='milestone' —— 「这一版有意义，我要留个记号」（大改前 / 定稿前打点）
+ * 与 saveDraft 的区别是**必须进版本表**：草稿态不写版本（X4 实测：否则 100 章 318MB），
+ * 但快照的目的就是留档，不写等于没打。
+ *
+ * @param {{chapterId:number, name:string, content?:string}} params content 缺省时以库中正文为准
+ * @returns {object|null} 更新后的章节；章节不存在返回 null
+ */
+function createMilestone({ chapterId, name, content }) {
+  const chapter = get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
+  if (!chapter) return null;
+  const version = chapter.version + 1;
+  const timestamp = now();
+  // 前端会把编辑器当前内容传过来 —— 「大改前打快照」要留住的就是屏幕上这一版
+  const snapshot = typeof content === 'string' ? content : chapter.content;
+  run('UPDATE chapters SET content = ?, version = ?, status = ?, updated_at = ? WHERE id = ?',
+    [snapshot, version, '已存稿 · 里程碑', timestamp, chapterId]);
+  run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'milestone', ?, ?)",
+    [chapterId, snapshot, version, String(name || '').trim(), timestamp]);
+  syncSearchFts('chapter', chapterId, [chapter.title, snapshot]);
+  syncChapterMentions(chapterId);
+  logAudit('chapter.milestone', { chapterId, version, name });
   return get('SELECT * FROM chapters WHERE id = ?', [chapterId]);
 }
 

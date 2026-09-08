@@ -15,6 +15,7 @@
  */
 
 import { buildMentionScanner } from './novel-mentions.js';
+import { localDate } from './novel-date.js';
 
 /**
  * ALTER TABLE 对已存在的列会抛 "duplicate column"，CREATE TABLE 对已存在的表会抛
@@ -166,8 +167,45 @@ export const MIGRATIONS = [
         }
       }
     }
+  },
+  {
+    version: 5,
+    name: 'F086 写作会话表 + 打卡日期本地化',
+    up(db) {
+      // F086 会话计时：一次会话 = 一行。ended_at 为空表示「进行中」
+      // （浏览器崩溃 / 直接关页面会留下这种行，由下次 startWritingSession 兜底关闭）。
+      // session_date 冗余存本地日期，让热力图/连续天数直接按日期聚合，不必每次换算时区。
+      db.exec(`CREATE TABLE IF NOT EXISTS writing_sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id   INTEGER NOT NULL,
+        chapter_id   INTEGER,
+        started_at   TEXT NOT NULL,
+        ended_at     TEXT,
+        duration_ms  INTEGER NOT NULL DEFAULT 0,
+        start_words  INTEGER NOT NULL DEFAULT 0,
+        end_words    INTEGER NOT NULL DEFAULT 0,
+        words_delta  INTEGER NOT NULL DEFAULT 0,
+        session_date TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(id)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project ON writing_sessions(project_id, started_at)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_open   ON writing_sessions(project_id, ended_at)');
+
+      // 存量打卡日期本地化：progress_date 此前由 `toISOString().slice(0,10)`
+      // 写入，是 UTC 日期。连续天数按它算会把清晨/晚间的写作算到隔壁一天，
+      // 老库的连击会凭空断掉。按 created_at 换算回本地日期即可，不增删任何行。
+      const rows = db.prepare('SELECT id, created_at, progress_date FROM writing_progress').all();
+      const update = db.prepare('UPDATE writing_progress SET progress_date = ? WHERE id = ?');
+      for (const row of rows) {
+        const corrected = localDate(row.created_at);
+        if (corrected && corrected !== row.progress_date) update.run(corrected, row.id);
+      }
+    }
   }
-  // v5 起由 M5/M6 任务追加：F084 伏笔表、F083 情节线
+  // v6 起由 M6 任务追加：F084 伏笔表、F083 情节线
 ];
 
 /** 迁移内使用的词典组装：实体主名（项目 + global 知识）。与 novel-db.js 的加载语义一致。 */
