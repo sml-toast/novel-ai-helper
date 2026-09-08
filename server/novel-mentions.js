@@ -14,7 +14,12 @@
  * @returns {(text:string) => Array<{entityType:string, entityId:number, surface:string, position:number}>}
  */
 
-const ENTITY_TYPES = new Set(['character', 'knowledge', 'scene', 'world', 'timeline', 'glossary']);
+/**
+ * 合法实体类型。'foreshadow'（F084 伏笔名）与 'clue'（F084 线索词）仅用于
+ * novel-foreshadow 的词面提示扫描，提及同步（loadMentionDictionary）不会产出
+ * 这两类 —— 扩大白名单对 F080 既有行为零影响。
+ */
+const ENTITY_TYPES = new Set(['character', 'knowledge', 'scene', 'world', 'timeline', 'glossary', 'foreshadow', 'clue']);
 
 export function buildMentionScanner(rows) {
   const byFirst = new Map();

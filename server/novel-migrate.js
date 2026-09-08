@@ -204,8 +204,38 @@ export const MIGRATIONS = [
         if (corrected && corrected !== row.progress_date) update.run(corrected, row.id);
       }
     }
+  },
+  {
+    version: 6,
+    name: 'F084 伏笔与线索生命周期',
+    up(db) {
+      // 伏笔：一行 = 一条需要回收的叙事线索。
+      //   chapter_id       埋设章节（登记时所在章）
+      //   expected_chapter 预期回收的章节序号（1 起）。章节表没有显式序号列，
+      //                    全项目统一按 id 升序编号；「逾期」= expected_chapter
+      //                    ≤ 当前章节数且状态仍为 planted，判定在服务端做。
+      //   status           状态机 planted → resolved / abandoned（单向，只从
+      //                    planted 流出；流转走 logAudit 留审计痕迹）。
+      db.exec(`CREATE TABLE IF NOT EXISTS foreshadows (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id       INTEGER NOT NULL,
+        chapter_id       INTEGER NOT NULL,
+        title            TEXT NOT NULL,
+        content          TEXT NOT NULL DEFAULT '',
+        expected_chapter INTEGER,
+        resolved_chapter INTEGER,
+        status           TEXT NOT NULL DEFAULT 'planted' CHECK (status IN ('planted','resolved','abandoned')),
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(id)
+      )`);
+      // 列表页按「项目 + 状态」分组查询；章节卡片需要按埋设章节反查
+      db.exec('CREATE INDEX IF NOT EXISTS idx_foreshadows_project ON foreshadows(project_id, status)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_foreshadows_chapter ON foreshadows(chapter_id)');
+    }
   }
-  // v6 起由 M6 任务追加：F084 伏笔表、F083 情节线
+  // v7 起由 M6 后续任务追加：F083 情节线
 ];
 
 /** 迁移内使用的词典组装：实体主名（项目 + global 知识）。与 novel-db.js 的加载语义一致。 */

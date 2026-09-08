@@ -78,6 +78,8 @@
         </div>
         <div class="topbar-actions">
           <button class="secondary-btn" type="button" data-open-panel="knowledge">知识库</button>
+          <!-- F084：伏笔与线索生命周期面板入口 -->
+          <button class="secondary-btn" type="button" data-open-panel="foreshadow">伏笔线索</button>
           <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
           <button class="secondary-btn" type="button" data-action="load-history">AI历史</button>
           <button class="secondary-btn" type="button" data-action="load-audit">审计日志</button>
@@ -129,6 +131,8 @@
               <button type="button" data-action="continue-writing">续写建议</button>
               <button type="button" data-action="hook-boost">爆点强化</button>
               <button type="button" data-action="foreshadow">伏笔回收</button>
+              <!-- F084：从选中文字一键登记为伏笔（人工登记为主，AI 不自动建库） -->
+              <button type="button" data-action="register-foreshadow" title="把编辑器中选中的文字登记为当前章节的伏笔">登记伏笔</button>
               <button type="button" data-action="platform-rewrite">平台改写</button>
               <button type="button" data-action="title-ai">标题生成</button>
               <button type="button" data-action="synopsis-ai">简介生成</button>
@@ -280,6 +284,8 @@
             <button class="ghost-btn" type="button" data-action="refresh-dashboard">刷新统计</button>
           </div>
           <div class="stats-grid" id="dashboardStats"></div>
+          <!-- F084：逾期伏笔提醒（逾期判定在服务端，这里只展示） -->
+          <div class="foreshadow-alerts" id="foreshadowAlerts"></div>
           <div class="goal-box">
             <!-- F087：deadline/note 开放为表单字段（此前写死 2026-08-31 与固定文案） -->
             <input id="dailyGoalInput" type="number" value="3000" min="0" placeholder="每日目标字数" />
@@ -503,6 +509,30 @@
       </div>
     </section>
 
+    <!-- F084：伏笔与线索生命周期面板。列表按状态分组，逾期标红；
+         提示区为词面匹配结果（复用提及扫描器），仅提示不自动建库 -->
+    <section class="drawer" id="foreshadowDrawer" role="dialog" aria-modal="true" aria-label="伏笔与线索面板" aria-hidden="true">
+      <div class="drawer-head">
+        <div>
+          <span class="eyebrow">Foreshadow Tracker</span>
+          <h2>伏笔与线索生命周期</h2>
+        </div>
+        <button class="ghost-btn" type="button" data-close-panel>关闭</button>
+      </div>
+      <div class="foreshadow-form">
+        <input id="foreshadowTitleInput" type="text" placeholder="伏笔名称（如：银色粉尘）" />
+        <input id="foreshadowContentInput" type="text" placeholder="内容摘要（可留空）" />
+        <input id="foreshadowExpectedInput" type="number" min="1" placeholder="预期回收章节序号（可留空）" />
+        <div class="toolbar-actions">
+          <button type="button" data-action="add-foreshadow">登记为当前章节伏笔</button>
+          <button type="button" data-action="refresh-foreshadows">刷新列表</button>
+          <button type="button" data-action="scan-foreshadow-hints">扫描线索提示</button>
+        </div>
+      </div>
+      <div class="foreshadow-hints" id="foreshadowHints"></div>
+      <div class="foreshadow-groups" id="foreshadowPanel"></div>
+    </section>
+
     <section class="drawer" id="publishDrawer" role="dialog" aria-modal="true" aria-label="发布计划面板" aria-hidden="true">
       <div class="drawer-head">
         <div>
@@ -510,6 +540,14 @@
           <h2>平台推送与定时章节</h2>
         </div>
         <button class="ghost-btn" type="button" data-close-panel>关闭</button>
+      </div>
+      <!-- F085：调度器状态。进程内实现，必须向用户明确其生效边界（Q4 拍板结论） -->
+      <div class="scheduler-status" id="schedulerStatus">
+        <div class="scheduler-line">
+          <span class="tag" id="schedulerState">调度器状态未知</span>
+          <span id="schedulerNext">下次扫描：--</span>
+        </div>
+        <p class="scheduler-warn">调度器仅在服务运行时生效，关机期间不会触发；重新启动服务后会自动补跑已过期的定时任务。当前推送均为模拟适配器（simulated），不会发起真实平台调用。</p>
       </div>
       <div class="publish-board" id="publishBoard"></div>
     </section>

@@ -6,7 +6,9 @@ import { resolveProjectId } from './novel-project.js';
 import { runAiTask, streamAiTask } from './novel-ai-provider.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
-import { createPublishTask, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
+import { createPublishTask, listPublishAdapters, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
+import { addForeshadow, listForeshadows, listOpenForeshadows, scanForeshadowHints, transitionForeshadow } from './novel-foreshadow.js';
+import { getSchedulerStatus, startPublishScheduler, stopPublishScheduler } from './novel-scheduler.js';
 
 const port = Number(process.env.NOVEL_API_PORT || 8787);
 
@@ -364,6 +366,11 @@ async function handle(req, res) {
       const secret = loadProjectSecret(projectId);
       const recall = getRecallForChapter(projectId, chapter);
       const memory = getPreviousChapterTail(projectId, chapter ? chapter.id : null);
+      // F084/F032：冲突校验必须核对未回收伏笔（分层 prompt 的伏笔层，provider 拼装）。
+      // 其余任务不注入 —— 只增 token 不增价值。
+      const openForeshadows = (body.taskType || 'sync') === 'conflict'
+        ? listOpenForeshadows(projectId)
+        : [];
 
       // CORS 头必须随 writeHead 一起发 —— writeHead 之后 setHeader 会抛
       // ERR_HTTP_HEADERS_SENT（实测踩过：进程直接崩溃，流全断）
@@ -406,6 +413,7 @@ async function handle(req, res) {
         },
         recall,
         memory,
+        foreshadows: openForeshadows,
         forceMock: body.mock === true,
           signal: abortState
         })) {
@@ -473,6 +481,10 @@ async function handle(req, res) {
       // 替代旧的全量上下文注入；prompt 分层见 novel-ai-provider.js
       const recall = getRecallForChapter(projectId, chapter);
       const memory = getPreviousChapterTail(projectId, chapter ? chapter.id : null);
+      // F084/F032：与流式通道同语义 —— conflict 任务注入未回收伏笔清单
+      const openForeshadows = (body.taskType || 'sync') === 'conflict'
+        ? listOpenForeshadows(projectId)
+        : [];
       const result = await runAiTask({
         taskType: body.taskType || 'sync',
         project: getAiProject(projectId),
@@ -485,7 +497,8 @@ async function handle(req, res) {
           targetedSelection: body.targeted === true
         },
         recall,
-        memory
+        memory,
+        foreshadows: openForeshadows
       });
       const taskId = recordAiTask({
         projectId,
@@ -574,8 +587,12 @@ async function handle(req, res) {
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/publish') {
-      scanDuePublishTasks(projectId);
-      return send(res, 200, { tasks: listPublishTasks(projectId) });
+      await scanDuePublishTasks(projectId);
+      // F085：本期只有 simulate 适配器（无真实平台调用），逐条显式标注 simulated，
+      // 让 UI 能明示「这是模拟推送」而不是让用户误以为真的发出去了。
+      const simulated = listPublishAdapters().length > 0
+        && listPublishAdapters().every(adapter => adapter.simulated);
+      return send(res, 200, { tasks: listPublishTasks(projectId).map(task => ({ ...task, simulated })) });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/novel/publish') {
@@ -585,12 +602,59 @@ async function handle(req, res) {
 
     if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/publish\/\d+\/simulate$/)) {
       const taskId = Number(url.pathname.split('/')[4]);
-      return send(res, 200, { task: simulatePublish(taskId) });
+      // F085 后执行是异步的（适配器 push 可为 async），必须等待落库完成再响应
+      return send(res, 200, { task: await simulatePublish(taskId) });
     }
 
     if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/publish\/\d+\/retry$/)) {
       const taskId = Number(url.pathname.split('/')[4]);
       return send(res, 200, { task: retryPublish(taskId) });
+    }
+
+    // ── F085 调度器状态：面板展示「运行中/已停止 + 下次扫描时间」──
+    if (req.method === 'GET' && url.pathname === '/api/novel/scheduler') {
+      return send(res, 200, { scheduler: getSchedulerStatus() });
+    }
+
+    // ── F084 伏笔与线索生命周期 ──
+    // 登记校验错误（空标题/非法章号）映射 400；章节不存在/跨项目映射 404。
+    if (req.method === 'GET' && url.pathname === '/api/novel/foreshadows') {
+      return send(res, 200, { foreshadows: listForeshadows(projectId) });
+    }
+
+    // 词面匹配提示（F080 联动）：只提示不建库
+    if (req.method === 'GET' && url.pathname === '/api/novel/foreshadows/hints') {
+      return send(res, 200, { hints: scanForeshadowHints(projectId) });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/foreshadows') {
+      const body = await readJson(req);
+      let foreshadow;
+      try {
+        foreshadow = addForeshadow({
+          projectId,
+          chapterId: Number(body.chapterId),
+          title: body.title,
+          content: body.content || '',
+          expectedChapter: body.expectedChapter ?? null
+        });
+      } catch (error) {
+        return send(res, 400, { error: error.message });
+      }
+      return foreshadow ? send(res, 201, { foreshadow }) : send(res, 404, { error: 'chapter not found in this project' });
+    }
+
+    if (req.method === 'POST' && url.pathname.match(/^\/api\/novel\/foreshadows\/\d+\/(resolve|abandon)$/)) {
+      const foreshadowId = Number(url.pathname.split('/')[4]);
+      const action = url.pathname.split('/')[5];
+      let foreshadow;
+      try {
+        foreshadow = transitionForeshadow(foreshadowId, action, { projectId });
+      } catch (error) {
+        // 状态机拒绝（已回收/已废弃再流转）属调用方错误 → 400
+        return send(res, 400, { error: error.message });
+      }
+      return foreshadow ? send(res, 200, { foreshadow }) : send(res, 404, { error: 'foreshadow not found' });
     }
 
     return send(res, 404, { error: 'not found' });
@@ -614,7 +678,29 @@ async function handle(req, res) {
 // 确需局域网/其他设备访问时：NOVEL_API_HOST=0.0.0.0（请自行评估风险）。
 const host = process.env.NOVEL_API_HOST || '127.0.0.1';
 
-createServer(handle).listen(port, host, () => {
+const server = createServer(handle);
+server.listen(port, host, () => {
   console.log(`Novel AI API listening on http://${host}:${port}`);
   console.log(`[auth] 允许的跨域来源：${[...ALLOWED_ORIGINS].join(', ')}`);
+  // F085：调度器随服务启动。启动即补跑一次过期任务（停机期间到期的不丢），
+  // 此后按固定周期扫描。测试库环境自动禁用（见 novel-scheduler.js）。
+  const scheduler = startPublishScheduler();
+  console.log(scheduler.running
+    ? `[scheduler] 定时发布调度器运行中，周期 ${Math.round(scheduler.intervalMs / 1000)}s`
+    : '[scheduler] 定时发布调度器未运行');
 });
+
+// F085 优雅关闭：停表 → 关服 → 退出。
+// 有挂着的 SSE/长连接时 close 回调可能迟迟不来，用硬超时兜底强制退出，
+// 避免 Playwright/系统管理器等 SIGTERM 后进程僵死。
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[api] 收到 ${signal}，正在优雅关闭……`);
+  stopPublishScheduler();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

@@ -976,11 +976,20 @@ function getDashboardStats(projectId) {
   const knowledgeCount = get('SELECT COUNT(*) AS count FROM knowledge_entries WHERE scope = ? OR project_id = ?', ['global', projectId]).count;
   const aiTaskCount = get('SELECT COUNT(*) AS count FROM ai_tasks WHERE project_id = ?', [projectId]).count;
   const publishWaiting = get("SELECT COUNT(*) AS count FROM publish_tasks WHERE project_id = ? AND status IN ('waiting','checking')", [projectId]).count;
+  // F084 逾期伏笔：预期回收章号 ≤ 当前章节数 且状态仍为已埋设。
+  // 序号口径与 novel-foreshadow.js 一致（章节按 id 升序 1 起编号）。
+  const foreshadowOverdue = get(
+    `SELECT COUNT(*) AS count FROM foreshadows
+     WHERE project_id = ? AND status = 'planted'
+       AND expected_chapter IS NOT NULL
+       AND expected_chapter <= (SELECT COUNT(*) FROM chapters WHERE project_id = ?)`,
+    [projectId, projectId]
+  ).count;
   const relationCount = get('SELECT COUNT(*) AS count FROM character_relations WHERE project_id = ?', [projectId]).count;
   const today = new Date().toISOString().slice(0, 10);
   const goal = get('SELECT * FROM writing_goals WHERE project_id = ?', [projectId]);
   const todayWords = get('SELECT COALESCE(SUM(words), 0) AS count FROM writing_progress WHERE project_id = ? AND progress_date = ?', [projectId, today]).count;
-  return { chapterCount, knowledgeCount, aiTaskCount, publishWaiting, relationCount, goal, todayWords };
+  return { chapterCount, knowledgeCount, aiTaskCount, publishWaiting, foreshadowOverdue, relationCount, goal, todayWords };
 }
 
 function upsertWritingGoal({ projectId, dailyWords, deadline, note }) {
@@ -1364,6 +1373,8 @@ function exportProject(projectId) {
       [projectId]
     ),
     publishTasks: all('SELECT * FROM publish_tasks WHERE project_id = ? ORDER BY id', [projectId]),
+    // F084：伏笔随项目导出（多项目数据完整性；旧导出文件缺该字段时导入按空处理）
+    foreshadows: all('SELECT * FROM foreshadows WHERE project_id = ? ORDER BY id', [projectId]),
     platforms: listPlatformConfigs(projectId),
     prompts: listPromptTemplates(projectId),
     writingGoals: all('SELECT * FROM writing_goals WHERE project_id = ?', [projectId]),
@@ -1425,7 +1436,7 @@ function assertImportPayload(payload) {
     throw new ImportPayloadError('导出 JSON 缺少 project 字段');
   }
   const arrayFields = ['chapters', 'chapterVersions', 'characters', 'relations', 'knowledge', 'aiTasks', 'aiFeedback',
-    'publishTasks', 'platforms', 'prompts', 'writingGoals', 'writingProgress', 'todos', 'annotations',
+    'publishTasks', 'foreshadows', 'platforms', 'prompts', 'writingGoals', 'writingProgress', 'todos', 'annotations',
     'glossary', 'sensitiveRules', 'timeline', 'scenes', 'world'];
   for (const field of arrayFields) {
     if (payload[field] !== undefined && !Array.isArray(payload[field])) {
@@ -1463,6 +1474,8 @@ function deleteProjectSubtree(projectId) {
   run('DELETE FROM chapter_annotations WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
   run('DELETE FROM chapter_versions WHERE chapter_id IN (SELECT id FROM chapters WHERE project_id = ?)', [projectId]);
   run('DELETE FROM publish_tasks WHERE project_id = ?', [projectId]);
+  // F084：伏笔挂在章节上，必须在删章节之前清掉
+  run('DELETE FROM foreshadows WHERE project_id = ?', [projectId]);
   run('DELETE FROM chapters WHERE project_id = ?', [projectId]);
   run('DELETE FROM writing_goals WHERE project_id = ?', [projectId]);
   run('DELETE FROM writing_progress WHERE project_id = ?', [projectId]);
@@ -1637,6 +1650,24 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
       publishCount += 1;
     }
     summary.publishTasks = publishCount;
+
+    // ── 伏笔（chapter_id 重映射；F084）──
+    let foreshadowCount = 0;
+    for (const f of data.foreshadows || []) {
+      const chapterId = chapterMap.get(Number(f.chapter_id));
+      if (!chapterId) continue;
+      run(
+        `INSERT INTO foreshadows (project_id, chapter_id, title, content, expected_chapter, resolved_chapter, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, chapterId, String(f.title ?? '未命名伏笔'), String(f.content ?? ''),
+          f.expected_chapter == null ? null : Number(f.expected_chapter) || null,
+          f.resolved_chapter == null ? null : Number(f.resolved_chapter) || null,
+          ['planted', 'resolved', 'abandoned'].includes(f.status) ? f.status : 'planted',
+          f.created_at || ts, f.updated_at || ts]
+      );
+      foreshadowCount += 1;
+    }
+    summary.foreshadows = foreshadowCount;
 
     // ── 平台 / 提示词（global 提示词存在即跳过）──
     for (const p of data.platforms || []) {
@@ -1903,4 +1934,4 @@ if (migrationResult.applied.length) {
   console.log(`[db] schema v${migrationResult.from} → v${migrationResult.to}，已应用迁移 ${migrationResult.applied.join(', ')}`);
 }
 
-export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createMilestone, createProject, deleteEntityAlias, deleteKnowledge, endWritingSession, exportChapter, exportProject, getBootstrapData, get, getAiProject, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getRecallForChapter, getWritingSessionStats, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, startWritingSession, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };
+export { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, all, archiveChapter,buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createMilestone, createProject, deleteEntityAlias, deleteKnowledge, endWritingSession, exportChapter, exportProject, getBootstrapData, get, getAiProject, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getRecallForChapter, getWritingSessionStats, importProject, listAiTasks, listEntityAliases, listEntityBacklinks, listChapterMentions, listProjects, projectExists, rescanProjectMentions, listAnnotations, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, logAudit, recordAiTask, rollbackChapter, run, saveChapter, saveDraft, searchAll, startWritingSession, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal };

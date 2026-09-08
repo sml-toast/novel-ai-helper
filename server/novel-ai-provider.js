@@ -166,7 +166,7 @@ const RECALL_TYPE_LABELS = {
   glossary: '术语'
 };
 
-function buildPrompt({ taskType, project, chapter, context, recall = [], memory = null }) {
+function buildPrompt({ taskType, project, chapter, context, recall = [], memory = null, foreshadows = [] }) {
   const template = context?.promptTemplate?.template || '';
   // 注意解构：truncated 是「截断元数据」{original,kept,strategy}；
   // truncateBody 返回的 {text, truncated} 里 text 进 prompt，truncated 才回传给响应
@@ -189,6 +189,18 @@ function buildPrompt({ taskType, project, chapter, context, recall = [], memory 
     lines.push('【召回的相关实体与设定】（按相关度排序）');
     for (const item of recall) {
       lines.push(`- [${RECALL_TYPE_LABELS[item.entityType] || item.entityType}] ${item.title}：${item.reason}`);
+    }
+  }
+
+  // L3.5 伏笔层（F084/F032）：未回收伏笔清单。目前仅 conflict（情节校验）注入 ——
+  // 冲突校验必须核对「本章是否该回收/是否与未回收伏笔矛盾」；其余任务注入只增 token。
+  // 数据由 novel-api 从 novel-foreshadow.listOpenForeshadows 取得，本层只负责拼装。
+  if (foreshadows.length) {
+    lines.push('【未回收伏笔清单】（校验时逐条核对本章是否回收、是否与伏笔冲突）');
+    for (const item of foreshadows) {
+      const expected = item.expected_chapter ? `，预期第 ${item.expected_chapter} 章前后回收` : '';
+      const summary = String(item.content || '').slice(0, 80);
+      lines.push(`- 《${item.title}》埋设于《${item.chapter_title || '未知章节'}》${expected}${summary ? `：${summary}` : ''}`);
     }
   }
 
@@ -309,8 +321,8 @@ function toRef(item) {
  *               绝不静默降级成 mock —— 否则用户会以为 AI 正常工作。
  * @returns {Promise<{provider:string, prompt:string, items:Array, refs:Array, truncated:object|null, tokenEstimate:number}>}
  */
-async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null, recall = [], memory = null }) {
-  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory });
+async function runAiTask({ taskType, project, chapter, context, apiKey = '', apiKeyError = null, recall = [], memory = null, foreshadows = [] }) {
+  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory, foreshadows });
   const tokenEstimate = estimateTokens(prompt);
   const refs = recall.map(toRef);
 
@@ -428,9 +440,9 @@ function chunkText(text, size = 40) {
  */
 export async function* streamAiTask({
   taskType, project, chapter, context, apiKey = '', apiKeyError = null,
-  recall = [], memory = null, forceMock = false, signal = null
+  recall = [], memory = null, foreshadows = [], forceMock = false, signal = null
 }) {
-  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory });
+  const { prompt, truncated } = buildPrompt({ taskType, project, chapter, context, recall, memory, foreshadows });
   const tokenEstimate = estimateTokens(prompt);
   const refs = recall.map(toRef);
 

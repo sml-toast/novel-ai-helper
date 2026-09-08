@@ -1005,3 +1005,149 @@ button.node { color: var(--text); cursor: pointer; }
 @media (max-width: 720px) {
   .merge-columns { grid-template-columns: 1fr; }
 }
+
+/* ══════════ F085 调度器状态（发布面板顶部） ══════════ */
+.scheduler-status {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.scheduler-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 复用 .tag 之外补充离线态：调度器停止/禁用时不该长得像「运行中」 */
+.tag.offline {
+  background: rgba(251, 113, 133, 0.16);
+  color: var(--danger);
+}
+
+.scheduler-warn {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ══════════ F084 伏笔与线索生命周期 ══════════ */
+.foreshadow-form {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.foreshadow-form input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.foreshadow-groups {
+  display: grid;
+  gap: 16px;
+}
+
+.foreshadow-group h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.foreshadow-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.foreshadow-item h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.foreshadow-item p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.foreshadow-item small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 逾期伏笔：预期回收章 ≤ 当前最新章仍未回收（判定在服务端），红框警示 */
+.foreshadow-item.overdue {
+  border-color: var(--danger);
+  background: rgba(251, 113, 133, 0.10);
+}
+
+.foreshadow-item.overdue h3 {
+  color: var(--danger);
+}
+
+.foreshadow-hints {
+  margin-bottom: 14px;
+}
+
+.foreshadow-hints h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.foreshadow-hint {
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border-left: 3px solid var(--warning);
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.08);
+  font-size: 13px;
+}
+
+.foreshadow-hint.kind-unregistered {
+  border-left-color: var(--accent);
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.foreshadow-hint p { margin: 0; }
+
+/* 仪表盘逾期伏笔提醒 */
+.foreshadow-alerts { display: grid; gap: 8px; }
+
+.foreshadow-alert {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  background: rgba(251, 113, 133, 0.10);
+  font-size: 13px;
+}
+
+.foreshadow-alert strong {
+  color: var(--danger);
+  flex-shrink: 0;
+}
+
+.hint-line {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
