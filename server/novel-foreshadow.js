@@ -28,11 +28,12 @@ function nowIso() {
 }
 
 /**
- * 章节 id → 全项目序号（1 起，按 id 升序）。
- * 章节数很小（长篇数百），每次现算即可，无需缓存。
+ * 章节 id → 全项目序号（1 起）。
+ * F083 起序号以 sort_order 为权威（拖拽排序后「第 15 章」跟着展示顺序走）；
+ * id 仅作 tiebreaker。v6 老库回填后 sort_order 与旧 id 序一致，序号不变。
  */
 function chapterOrdinalMap(projectId) {
-  const rows = all('SELECT id FROM chapters WHERE project_id = ? ORDER BY id', [projectId]);
+  const rows = all('SELECT id FROM chapters WHERE project_id = ? ORDER BY sort_order, id', [projectId]);
   const map = new Map();
   rows.forEach((row, index) => map.set(row.id, index + 1));
   return map;
@@ -170,7 +171,7 @@ export function listOpenForeshadows(projectId) {
  */
 export function scanForeshadowHints(projectId) {
   const hints = [];
-  const chapters = all('SELECT id, title, content FROM chapters WHERE project_id = ? ORDER BY id', [projectId]);
+  const chapters = all('SELECT id, title, content FROM chapters WHERE project_id = ? ORDER BY sort_order, id', [projectId]);
 
   // ── A. 已登记伏笔在别的章被提及 ──
   const openList = listOpenForeshadows(projectId);

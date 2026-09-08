@@ -140,6 +140,27 @@
 
 ---
 
+## M6 新增功能（F083 / F092）
+
+### 大纲与结构视图（F083）
+
+| 编号 | 功能名称 | 入口 | 说明 |
+|------|----------|------|------|
+| F083a | 大纲树（列表视图） | `data-outline-view="list"` | 章 → 场景两级结构树（v7 起场景可归属章节），点击章节/场景卡片定位到该章；显示字数、场景数与该章伏笔（⚑ 已埋设 / ⚠ 逾期标红） |
+| F083b | 章节拖拽排序 | 列表/卡片视图拖拽章节标题 | 原生 HTML5 Drag and Drop，拖完 `POST /chapters/reorder` 全量校验后持久化 `sort_order`（v7 迁移新增列，`ORDER BY sort_order, id` 成为全项目权威章节顺序） |
+| F083c | 场景卡片（Corkboard） | `data-outline-view="corkboard"` | 章卡片 + 场景卡片网格（标题/摘要/POV/氛围/伏笔），场景卡可拖到其他章（含「未分配」桶），`POST /scenes/reorder` 持久化归属与顺序 |
+| F083d | Plot Grid 情节网格 | `data-outline-view="grid"` | 情节线 × 章节矩阵，单元格点击循环节拍（空 → ● 有进展 → ▸ 计划中 → 清除），支持 ≥ 5 条并行线索；线索多时表格横向滚动 |
+
+对应后端：`server/novel-outline.js`（数据装配 + 重排 + 情节线/节拍）、`server/novel-migrate.js` v7（`chapters.sort_order`、`scene_locations.chapter_id/sort_order/pov`、`plot_lines`/`plot_beats` 表）。
+
+### 多格式导出（F092）
+
+| 编号 | 功能名称 | data-action | 说明 |
+|------|----------|-------------|------|
+| F092 | 多格式导出 | `export-multi` | 弹窗选择 Markdown / DOCX / EPUB + 附录勾选（批注/术语表/时间线/伏笔清单，默认全选）+ 单章/全书；文件名 `<项目名>-<格式>-<日期>.<ext>` 由服务端生成（RFC 5987 中文文件名）。实现：`server/novel-export.js` + `server/novel-docx.js` / `server/novel-epub.js`（OOXML/OPF 手写模板）+ `server/novel-zip.js`（零依赖 ZIP 容器，`zlib.deflateRawSync` + `zlib.crc32`） |
+
+---
+
 ## 统计汇总
 
 | 类型 | 数量 |

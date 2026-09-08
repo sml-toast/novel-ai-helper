@@ -1265,3 +1265,113 @@ body.focus-mode .editor-paragraph-layer { display: block; }
   color: var(--muted);
   text-align: center;
 }
+
+/* ==========================================================================
+ * F083 大纲树 / Corkboard / Plot Grid + F092 导出选项
+ * ========================================================================== */
+
+.outline-layout { margin-top: 22px; }
+.outline-views { display: flex; gap: 8px; align-items: center; }
+.outline-views [data-outline-view] {
+  border: 1px solid var(--line, #e2e5ee);
+  background: transparent;
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.outline-views [data-outline-view].active {
+  background: var(--accent, #6d5ef5);
+  border-color: var(--accent, #6d5ef5);
+  color: #fff;
+}
+.outline-body { margin-top: 14px; }
+.outline-empty { color: var(--muted, #8a8fa3); font-size: 14px; padding: 18px 4px; }
+
+/* ── 视图一：大纲树 ── */
+.outline-branch { padding: 6px 0 10px; border-bottom: 1px dashed var(--line, #e8eaf2); }
+.outline-branch:last-child { border-bottom: none; }
+.outline-branch.unassigned { opacity: .85; }
+.outline-chapter {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 6px; border-radius: 8px; cursor: grab;
+}
+.outline-chapter.muted { cursor: default; }
+.outline-chapter-title {
+  border: none; background: transparent; font: inherit; font-weight: 700;
+  cursor: pointer; padding: 0; color: var(--text, #23263b);
+}
+.outline-meta { color: var(--muted, #8a8fa3); font-size: 12px; }
+.outline-scenes { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 4px 26px; }
+.outline-empty-scene { color: var(--muted, #8a8fa3); font-size: 12px; font-style: italic; }
+
+/* ── 场景卡片（树内紧凑 & Corkboard 网格共用） ── */
+.scene-card {
+  border: 1px solid var(--line, #e2e5ee);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  cursor: grab;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.scene-card.in-tree { max-width: 520px; }
+.scene-card p { margin: 0; font-size: 12px; color: var(--muted, #6f7488); }
+.scene-pov {
+  align-self: flex-start;
+  font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  background: rgba(109, 94, 245, .12); color: var(--accent, #6d5ef5);
+}
+.scene-mood { font-size: 11px; color: var(--muted, #8a8fa3); }
+
+/* ── 视图二：Corkboard ── */
+.corkboard { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.chapter-card {
+  border: 1px solid var(--line, #e2e5ee);
+  border-radius: 14px; padding: 12px;
+  background: #fbfbfe; cursor: pointer;
+}
+.chapter-card.muted { opacity: .8; }
+.chapter-card-head { display: flex; flex-direction: column; gap: 2px; cursor: grab; padding-bottom: 8px; }
+.scene-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+
+/* ── 伏笔 chips（⚑ / ⚠ 逾期红） ── */
+.outline-foreshadows { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 6px 0 26px; }
+.foreshadow-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(34, 160, 110, .12); color: #1c7c56;
+}
+.foreshadow-chip.overdue { background: rgba(220, 60, 70, .12); color: #c03546; font-weight: 600; }
+
+/* ── 拖拽反馈 ── */
+.dragging { opacity: .45; }
+.drop-hover { outline: 2px dashed var(--accent, #6d5ef5); outline-offset: 2px; }
+
+/* ── 视图三：Plot Grid ── */
+.plotgrid-wrap { overflow-x: auto; padding-bottom: 6px; }
+.plotgrid-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.plotgrid-toolbar input { max-width: 260px; }
+.plotgrid { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+.plotgrid th, .plotgrid td { border: 1px solid var(--line, #e2e5ee); padding: 4px 6px; text-align: center; }
+.plotgrid thead th { background: #f6f7fc; font-weight: 600; white-space: nowrap; }
+.plotgrid-corner { text-align: left !important; }
+.plotgrid-line { text-align: left !important; white-space: nowrap; font-weight: 600; min-width: 170px; }
+.plotline-color { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
+.plotline-delete {
+  border: none; background: transparent; color: var(--muted, #8a8fa3);
+  cursor: pointer; margin-left: 8px; font-size: 14px; line-height: 1;
+}
+.plotline-delete:hover { color: #c03546; }
+.beat-cell {
+  width: 30px; height: 26px; border: none; background: transparent;
+  cursor: pointer; font-size: 15px; color: var(--text, #23263b); border-radius: 6px;
+}
+.beat-cell:hover { background: rgba(109, 94, 245, .1); }
+.beat-cell.mark-progress { color: #1c7c56; font-weight: 700; }
+.beat-cell.mark-planned { color: #b8860b; font-weight: 700; }
+
+/* ── F092 导出弹窗选项 ── */
+.export-option {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; padding: 4px 2px;
+}
+.export-option input { width: auto; }

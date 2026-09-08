@@ -9,6 +9,9 @@ import { saveDraft } from './draft.js';
 import { updateWordCount } from './editor.js';
 import { endWritingSession } from './session.js';
 import { createProject, newProjectWizard, importProjectFile, exportProjectFile, exportChapterFile } from './projects.js';
+import { openExportMenu } from './export-menu.js';
+import { setOutlineView, refreshOutline } from './outline.js';
+import { addPlotLine } from './plot-grid.js';
 import { createChapter, archiveActiveChapter, switchChapter, switchProject } from './chapters.js';
 import { addAnnotation, loadAnnotations, addTodo, loadTodos, addGlossary, loadGlossary, sensitiveCheck, toggleTodoStatus } from './editorial.js';
 import { refreshGraph, showNodeDetail } from './graph.js';
@@ -44,6 +47,10 @@ document.addEventListener('click', event => {
     switchChapter(Number(chapterButton.dataset.chapterId));
     return;
   }
+
+  // F083：大纲区三视图切换（列表 / 卡片 Corkboard / 情节网格）
+  const outlineViewButton = event.target.closest('[data-outline-view]');
+  if (outlineViewButton) return setOutlineView(outlineViewButton.dataset.outlineView);
 
   const tabButton = event.target.closest('[data-tab]');
   if (tabButton) {
@@ -163,7 +170,10 @@ document.addEventListener('click', event => {
   if (action === 'bulk-knowledge') return bulkKnowledge();
   if (action === 'export-project') return exportProjectFile();
   if (action === 'export-chapter') return exportChapterFile();
+  if (action === 'export-multi') return openExportMenu();
   if (action === 'import-project') return importProjectFile();
+  if (action === 'refresh-outline') return refreshOutline();
+  if (action === 'add-plotline') return addPlotLine();
   if (action === 'save-goal') return saveGoal();
   if (action === 'add-progress') return addProgress();
   if (action === 'archive-chapter') return archiveActiveChapter();

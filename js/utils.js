@@ -21,7 +21,14 @@ export function formatDateTime(value) {
 }
 
 export function downloadFile(filename, content, type) {
-  const blob = new Blob([content], { type });
+  downloadBlob(filename, new Blob([content], { type }));
+}
+
+/**
+ * Blob 版下载（F092）：DOCX/EPUB 是二进制，不能走字符串拼装。
+ * downloadFile 现在委托到这里，两条入口共享同一段 DOM 下载逻辑。
+ */
+export function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

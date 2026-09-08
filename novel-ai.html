@@ -179,6 +179,27 @@
         </aside>
       </section>
 
+      <!-- F083：大纲树 / 场景卡片 / 情节网格三视图（列表视图同时承担拖拽排序） -->
+      <section class="outline-layout" aria-label="大纲与结构视图">
+        <article class="panel outline-panel">
+          <div class="panel-head large">
+            <div>
+              <span class="eyebrow">Outline · Corkboard · Plot Grid</span>
+              <h2>大纲与结构视图</h2>
+            </div>
+            <div class="outline-views" role="tablist" aria-label="大纲视图切换">
+              <button class="active" type="button" role="tab" aria-selected="true" data-outline-view="list">列表</button>
+              <button type="button" role="tab" aria-selected="false" data-outline-view="corkboard">卡片</button>
+              <button type="button" role="tab" aria-selected="false" data-outline-view="grid">情节网格</button>
+              <button class="ghost-btn" type="button" data-action="refresh-outline">刷新结构</button>
+            </div>
+          </div>
+          <div class="outline-body" id="outlineBody">
+            <p class="outline-empty">点击上方视图切换加载结构视图；拖拽章节标题可调整顺序（自动保存），拖拽场景卡片可归类到章节。</p>
+          </div>
+        </article>
+      </section>
+
       <section class="feature-grid" aria-label="小说辅助功能">
         <article class="feature-card">
           <div class="icon" aria-hidden="true">🧠</div>
@@ -375,6 +396,8 @@
             <button type="button" data-action="bulk-knowledge">批量导入知识</button>
             <button type="button" data-action="export-project">导出项目 JSON</button>
             <button type="button" data-action="export-chapter">导出当前章节 TXT</button>
+            <!-- F092：多格式导出（Markdown / DOCX / EPUB，含批注/术语/时间线/伏笔选项） -->
+            <button type="button" data-action="export-multi">多格式导出（MD/DOCX/EPUB）</button>
             <button type="button" data-action="import-project">导入项目 JSON</button>
           </div>
           <div class="log-list" id="configLog"></div>

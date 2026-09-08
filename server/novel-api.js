@@ -8,6 +8,8 @@ import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
 import { createPublishTask, listPublishAdapters, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
 import { addForeshadow, listForeshadows, listOpenForeshadows, scanForeshadowHints, transitionForeshadow } from './novel-foreshadow.js';
+import { exportDocx, exportEpub, exportMarkdown } from './novel-export.js';
+import { assignScenes, createPlotLine, deletePlotLine, getOutlineData, reorderChapters, setPlotBeat } from './novel-outline.js';
 import { getSchedulerStatus, startPublishScheduler, stopPublishScheduler } from './novel-scheduler.js';
 
 const port = Number(process.env.NOVEL_API_PORT || 8787);
@@ -30,6 +32,28 @@ function send(res, status, payload) {
   }
   res.writeHead(status, headers);
   res.end(JSON.stringify(payload));
+}
+
+/**
+ * 二进制/文本附件响应（F092 多格式导出专用）。
+ * 与 send() 同款 CORS 白名单逻辑（res.locals.corsOrigin 已由鉴权中间件写入）；
+ * Content-Disposition 双写：ASCII 回退名 + RFC 5987 filename*（中文文件名必需）。
+ */
+function sendFile(res, status, { filename, mime, body }) {
+  const corsOrigin = res.locals?.corsOrigin || null;
+  const headers = {
+    'content-type': mime,
+    'content-length': Buffer.byteLength(body),
+    'content-disposition': `attachment; filename="download"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'access-control-allow-methods': 'GET,POST,OPTIONS',
+    'access-control-allow-headers': 'content-type'
+  };
+  if (corsOrigin) {
+    headers['access-control-allow-origin'] = corsOrigin;
+    headers['vary'] = 'Origin';
+  }
+  res.writeHead(status, headers);
+  res.end(body);
 }
 
 /**
@@ -584,6 +608,71 @@ async function handle(req, res) {
       const chapterId = Number(url.pathname.split('/')[5]);
       const data = exportChapter(chapterId);
       return data ? send(res, 200, data) : send(res, 404, { error: 'chapter not found' });
+    }
+
+    // ── F092 多格式导出（Markdown / DOCX / EPUB）──
+    // 响应体可能几 MB，但 readJson 的 2MB 上限只作用于请求体，GET 无请求体，不受影响。
+    // 选项缺省 = 全选（与前端勾选一致）；chapterId 传了即单章导出。
+    if (req.method === 'GET' && ['markdown', 'docx', 'epub'].includes(url.pathname.split('/').pop())
+      && url.pathname.startsWith('/api/novel/export/')) {
+      const format = url.pathname.split('/').pop();
+      const query = url.searchParams;
+      const options = {
+        annotations: query.get('annotations') ?? '1',
+        glossary: query.get('glossary') ?? '1',
+        timeline: query.get('timeline') ?? '1',
+        foreshadows: query.get('foreshadows') ?? '1',
+        chapterId: query.get('chapterId')
+      };
+      const builder = { markdown: exportMarkdown, docx: exportDocx, epub: exportEpub }[format];
+      const file = builder(projectId, options);
+      return file ? sendFile(res, 200, file) : send(res, 404, { error: 'project or chapter not found' });
+    }
+
+    // ── F083 大纲 / 场景 / 情节线 ──
+    if (req.method === 'GET' && url.pathname === '/api/novel/outline') {
+      return send(res, 200, getOutlineData(projectId));
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/chapters/reorder') {
+      const body = await readJson(req);
+      const result = reorderChapters(projectId, body.items || []);
+      return result === null
+        ? send(res, 400, { error: 'invalid chapter order payload' })
+        : send(res, 200, result);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/scenes/reorder') {
+      const body = await readJson(req);
+      const result = assignScenes(projectId, body.items || []);
+      return result === null
+        ? send(res, 400, { error: 'invalid scene assignment payload' })
+        : send(res, 200, result);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/plotlines') {
+      const body = await readJson(req);
+      const line = createPlotLine({ projectId, title: body.title, color: body.color });
+      return line ? send(res, 201, { plotLine: line }) : send(res, 400, { error: 'plot line title is required' });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/novel/plotlines/delete') {
+      const body = await readJson(req);
+      const removed = deletePlotLine(Number(body.id), projectId);
+      return removed ? send(res, 200, { plotLine: removed }) : send(res, 404, { error: 'plot line not found' });
+    }
+
+    // 节拍标记：mark 传 null/缺失 = 清除该（线索 × 章节）节拍；否则 upsert。
+    if (req.method === 'POST' && url.pathname === '/api/novel/plotbeats') {
+      const body = await readJson(req);
+      const result = setPlotBeat({
+        projectId,
+        plotLineId: Number(body.plotLineId),
+        chapterId: Number(body.chapterId),
+        mark: body.mark ?? null,
+        notes: body.notes || ''
+      });
+      return result === null ? send(res, 404, { error: 'plot line or chapter not found in this project' }) : send(res, 200, result);
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/publish') {

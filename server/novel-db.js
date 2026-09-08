@@ -603,7 +603,7 @@ function getBootstrapData(projectId = null) {
     user,
     project,
     projects: listProjects(),
-    chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY id', [project.id]),
+    chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY sort_order, id', [project.id]),
     knowledge: {
       global: all("SELECT * FROM knowledge_entries WHERE scope = 'global' ORDER BY id"),
       project: all("SELECT * FROM knowledge_entries WHERE scope = 'project' AND project_id = ? ORDER BY id", [project.id])
@@ -664,8 +664,11 @@ function getAiProject(projectId) {
 /** 前情记忆：上一章标题 + 尾部摘录（F086 章节摘要落库前的过渡方案） */
 function getPreviousChapterTail(projectId, chapterId, tailLength = 200) {
   if (!chapterId) return null;
+  // F083 起「上一章」以 sort_order 为准：拖拽改序后 AI 的前情必须跟着展示顺序走
   const previous = get(
-    'SELECT id, title, content FROM chapters WHERE project_id = ? AND id < ? ORDER BY id DESC LIMIT 1',
+    `SELECT id, title, content FROM chapters
+     WHERE project_id = ? AND sort_order < (SELECT sort_order FROM chapters WHERE id = ?)
+     ORDER BY sort_order DESC, id DESC LIMIT 1`,
     [projectId, chapterId]
   );
   if (!previous) return null;
@@ -711,10 +714,13 @@ function getRecallForChapter(projectId, chapter, { topK = 8 } = {}) {
     mentionCounts[`${row.entity_type}:${row.entity_id}`] = row.count;
   }
 
-  // 信号④：各实体最近一次被提及的章节位置（邻近度）
-  const chapterIndex = get('SELECT COUNT(*) AS count FROM chapters WHERE project_id = ? AND id < ?', [projectId, chapter.id]).count;
+  // 信号④：各实体最近一次被提及的章节位置（邻近度）。章节序按 sort_order（F083）
+  const chapterIndex = get(
+    'SELECT COUNT(*) AS count FROM chapters WHERE project_id = ? AND sort_order < (SELECT sort_order FROM chapters WHERE id = ?)',
+    [projectId, chapter.id]
+  ).count;
   const indexById = new Map(
-    all('SELECT id FROM chapters WHERE project_id = ? ORDER BY id', [projectId]).map((row, index) => [row.id, index])
+    all('SELECT id FROM chapters WHERE project_id = ? ORDER BY sort_order, id', [projectId]).map((row, index) => [row.id, index])
   );
   const lastMentionIndex = {};
   for (const row of all(
@@ -765,9 +771,11 @@ function listPublishTasks(projectId) {
 
 function createChapter({ projectId, title, content }) {
   const timestamp = now();
+  // F083：新章追加到当前排序末尾（max+1；空项目 = 1）
+  const nextSort = Number(get('SELECT COALESCE(MAX(sort_order), 0) + 1 AS next FROM chapters WHERE project_id = ?', [projectId]).next);
   const result = run(
-    'INSERT INTO chapters (project_id, title, content, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [projectId, title, content, '写作中 · AI 同步辅助', timestamp, timestamp]
+    'INSERT INTO chapters (project_id, title, content, status, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [projectId, title, content, '写作中 · AI 同步辅助', nextSort, timestamp, timestamp]
   );
   const chapterId = Number(result.lastInsertRowid);
   run("INSERT INTO chapter_versions (chapter_id, content, version, kind, name, created_at) VALUES (?, ?, ?, 'auto', '初始版本', ?)", [chapterId, content, 1, timestamp]);
@@ -1359,7 +1367,8 @@ function exportProject(projectId) {
     schemaVersion: currentVersion(db),
     exportedAt: now(),
     project: sanitizeProject(project),
-    chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY id', [projectId]),
+    // F083：按 sort_order 权威顺序导出（v6 老库回填后与旧 id 顺序一致，往返不变形）
+    chapters: all('SELECT * FROM chapters WHERE project_id = ? ORDER BY sort_order, id', [projectId]),
     chapterVersions: all(
       'SELECT cv.* FROM chapter_versions cv JOIN chapters c ON c.id = cv.chapter_id WHERE c.project_id = ? ORDER BY cv.id',
       [projectId]
@@ -1388,7 +1397,10 @@ function exportProject(projectId) {
     sensitiveRules: all('SELECT * FROM sensitive_rules WHERE project_id = ? OR project_id IS NULL ORDER BY id', [projectId]),
     timeline: listTimeline(projectId),
     scenes: listScenes(projectId),
-    world: listWorldSettings(projectId)
+    world: listWorldSettings(projectId),
+    // F083：情节线与节拍随项目导出（旧导出文件缺该字段时导入按空处理）
+    plotLines: all('SELECT * FROM plot_lines WHERE project_id = ? ORDER BY sort_order, id', [projectId]),
+    plotBeats: all('SELECT * FROM plot_beats WHERE project_id = ? ORDER BY id', [projectId])
   };
 }
 
@@ -1437,7 +1449,7 @@ function assertImportPayload(payload) {
   }
   const arrayFields = ['chapters', 'chapterVersions', 'characters', 'relations', 'knowledge', 'aiTasks', 'aiFeedback',
     'publishTasks', 'foreshadows', 'platforms', 'prompts', 'writingGoals', 'writingProgress', 'todos', 'annotations',
-    'glossary', 'sensitiveRules', 'timeline', 'scenes', 'world'];
+    'glossary', 'sensitiveRules', 'timeline', 'scenes', 'world', 'plotLines', 'plotBeats'];
   for (const field of arrayFields) {
     if (payload[field] !== undefined && !Array.isArray(payload[field])) {
       throw new ImportPayloadError(`导出 JSON 字段 ${field} 应为数组`);
@@ -1547,13 +1559,15 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
     }
 
     // ── 章节 + 版本（先父后子，保留 version 号与时间戳）──
+    // F083：sort_order 按载荷顺序重编 —— 导出按权威顺序出、导入按同一顺序进，
+    // 往返后顺序不变；旧导出文件（无 sort_order 字段）同样成立。
     const chapterMap = new Map();
-    for (const c of data.chapters || []) {
+    for (const [index, c] of (data.chapters || []).entries()) {
       const result = run(
-        `INSERT INTO chapters (project_id, title, content, status, scheduled_at, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO chapters (project_id, title, content, status, scheduled_at, version, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [projectId, String(c.title ?? '未命名章节'), String(c.content ?? ''), String(c.status ?? ''),
-          c.scheduled_at ?? null, Number(c.version) || 1, c.created_at || ts, c.updated_at || ts]
+          c.scheduled_at ?? null, Number(c.version) || 1, Number(c.sort_order) || index + 1, c.created_at || ts, c.updated_at || ts]
       );
       const chapterId = Number(result.lastInsertRowid);
       chapterMap.set(Number(c.id), chapterId);
@@ -1741,15 +1755,49 @@ function importProject(payload, { mode = 'new', targetProjectId = null } = {}) {
     }
     summary.timeline = (data.timeline || []).length;
 
-    for (const s of data.scenes || []) {
+    // ── 场景（chapter_id 重映射 + sort_order/pov；F083 后场景可归属章节）──
+    const sceneMap = new Map();
+    for (const [index, s] of (data.scenes || []).entries()) {
+      const chapterId = s.chapter_id == null ? null : chapterMap.get(Number(s.chapter_id)) ?? null;
       const result = run(
-        `INSERT INTO scene_locations (project_id, name, mood, description, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [projectId, String(s.name ?? '未命名场景'), String(s.mood ?? ''), String(s.description ?? ''), s.created_at || ts, s.updated_at || ts]
+        `INSERT INTO scene_locations (project_id, name, mood, description, pov, chapter_id, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, String(s.name ?? '未命名场景'), String(s.mood ?? ''), String(s.description ?? ''),
+          String(s.pov ?? ''), chapterId, Number(s.sort_order) || index + 1, s.created_at || ts, s.updated_at || ts]
       );
+      sceneMap.set(Number(s.id), Number(result.lastInsertRowid));
       syncSearchFts('scene', Number(result.lastInsertRowid), [s.name, s.mood, s.description]);
     }
-    summary.scenes = (data.scenes || []).length;
+    summary.scenes = sceneMap.size;
+
+    // ── 情节线 + 节拍（plot_line_id / chapter_id / scene_id 全部重映射；F083）──
+    const plotLineMap = new Map();
+    for (const [index, p] of (data.plotLines || []).entries()) {
+      const result = run(
+        `INSERT INTO plot_lines (project_id, title, color, sort_order, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [projectId, String(p.title ?? '未命名情节线'), /^#[0-9a-fA-F]{6}$/.test(String(p.color || '')) ? p.color : '#8b5cf6',
+          Number(p.sort_order) || index + 1, p.created_at || ts, p.updated_at || ts]
+      );
+      plotLineMap.set(Number(p.id), Number(result.lastInsertRowid));
+    }
+    summary.plotLines = plotLineMap.size;
+
+    let beatCount = 0;
+    for (const b of data.plotBeats || []) {
+      const plotLineId = plotLineMap.get(Number(b.plot_line_id));
+      if (!plotLineId) continue;
+      const chapterId = b.chapter_id == null ? null : chapterMap.get(Number(b.chapter_id)) ?? null;
+      const sceneId = b.scene_id == null ? null : sceneMap.get(Number(b.scene_id)) ?? null;
+      run(
+        `INSERT INTO plot_beats (project_id, plot_line_id, chapter_id, scene_id, mark, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, plotLineId, chapterId, sceneId, ['progress', 'planned'].includes(b.mark) ? b.mark : 'progress',
+          String(b.notes ?? ''), b.created_at || ts, b.updated_at || ts]
+      );
+      beatCount += 1;
+    }
+    summary.plotBeats = beatCount;
 
     for (const w of data.world || []) {
       const result = run(
@@ -1836,7 +1884,7 @@ function searchAll(projectId, query) {
     ? all(`SELECT id, title, status, updated_at FROM chapters
            WHERE ${queryIn('chapter')}
              AND project_id = ? AND (title LIKE ? OR content LIKE ?)
-           ORDER BY id`, [projectId, like, like])
+           ORDER BY sort_order, id`, [projectId, like, like])
     : [];
   const characters = ids('character').length
     ? all(`SELECT id, name, role, arc FROM characters

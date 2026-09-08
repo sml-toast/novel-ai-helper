@@ -234,8 +234,69 @@ export const MIGRATIONS = [
       db.exec('CREATE INDEX IF NOT EXISTS idx_foreshadows_project ON foreshadows(project_id, status)');
       db.exec('CREATE INDEX IF NOT EXISTS idx_foreshadows_chapter ON foreshadows(chapter_id)');
     }
+  },
+  {
+    version: 7,
+    name: 'F083/F092 章节排序 + 场景归属章节 + 情节线',
+    up(db) {
+      // ── 章节显式序号：拖拽排序的数据基础（F083）──
+      // 此前章节按 id 升序隐式编号，无序号列。sort_order 按「现有 id 顺序」回填 1..n
+      // （每项目独立计数），保证 v6 老库升级后展示顺序零变化。
+      // 回填用相关子查询「≤ 自己 id 的同项目章数」，对同一数据重复执行结果不变。
+      // WHERE sort_order = 0 让重跑时绝不覆盖已由用户调整过的顺序（额外保险）。
+      safeExec(db, `ALTER TABLE chapters ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+      db.exec(`UPDATE chapters SET sort_order = (
+        SELECT COUNT(*) FROM chapters c2
+        WHERE c2.project_id = chapters.project_id AND c2.id <= chapters.id
+      ) WHERE sort_order = 0`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chapters_sort ON chapters(project_id, sort_order)');
+
+      // ── 场景成为一级结构实体（F083）：归属章节 + 排序 + POV ──
+      // 复用既有 scene_locations（避免两套场景数据源），chapter_id 为 NULL 的
+      // 旧行归入「未分配」，由前端给出归类入口。pov 默认空串（无 POV）。
+      safeExec(db, `ALTER TABLE scene_locations ADD COLUMN chapter_id INTEGER`);
+      safeExec(db, `ALTER TABLE scene_locations ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`);
+      safeExec(db, `ALTER TABLE scene_locations ADD COLUMN pov TEXT NOT NULL DEFAULT ''`);
+      db.exec(`UPDATE scene_locations SET sort_order = (
+        SELECT COUNT(*) FROM scene_locations s2
+        WHERE s2.project_id = scene_locations.project_id AND s2.id <= scene_locations.id
+      ) WHERE sort_order = 0`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_scenes_chapter ON scene_locations(project_id, chapter_id)');
+
+      // ── 情节线（F083 Plot Grid）：线索实体 + 节拍矩阵 ──
+      // plot_lines 一行 = 一条并行线索（PRD 验收：可追踪 ≥ 5 条）；
+      // plot_beats 一行 = 该线索在某章节的一次节拍标记（line × chapter 唯一）。
+      db.exec(`CREATE TABLE IF NOT EXISTS plot_lines (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id  INTEGER NOT NULL,
+        title       TEXT NOT NULL,
+        color       TEXT NOT NULL DEFAULT '#8b5cf6',
+        sort_order  INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      )`);
+      db.exec(`CREATE TABLE IF NOT EXISTS plot_beats (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id    INTEGER NOT NULL,
+        plot_line_id  INTEGER NOT NULL,
+        chapter_id    INTEGER,
+        scene_id      INTEGER,
+        mark          TEXT NOT NULL DEFAULT 'progress' CHECK (mark IN ('progress','planned')),
+        notes         TEXT NOT NULL DEFAULT '',
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        FOREIGN KEY (project_id) REFERENCES projects(id),
+        FOREIGN KEY (plot_line_id) REFERENCES plot_lines(id),
+        FOREIGN KEY (chapter_id) REFERENCES chapters(id),
+        FOREIGN KEY (scene_id) REFERENCES scene_locations(id)
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_plotlines_project ON plot_lines(project_id, sort_order)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_plotbeats_line ON plot_beats(plot_line_id, chapter_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_plotbeats_project ON plot_beats(project_id)');
+    }
   }
-  // v7 起由 M6 后续任务追加：F083 情节线
+  // v8 起由后续任务追加
 ];
 
 /** 迁移内使用的词典组装：实体主名（项目 + global 知识）。与 novel-db.js 的加载语义一致。 */

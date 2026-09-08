@@ -221,6 +221,21 @@ Content-Type: application/json
 }
 ```
 
+## M6 新增按钮（F083 / F092）
+
+| 按钮/入口 | 选择器 | 行为 | 端点 |
+|---|---|---|---|
+| 视图切换：列表 | `[data-outline-view="list"]` | 大纲树（章→场景，拖拽排序） | `GET /outline` |
+| 视图切换：卡片 | `[data-outline-view="corkboard"]` | Corkboard 场景卡片，可拖拽归类 | `POST /scenes/reorder` |
+| 视图切换：情节网格 | `[data-outline-view="grid"]` | Plot Grid 矩阵，单元格循环节拍 | `POST /plotbeats` |
+| 刷新结构 | `[data-action="refresh-outline"]` | 重新拉取大纲数据 | `GET /outline` |
+| + 新情节线 | `[data-action="add-plotline"]`（Plot Grid 工具栏） | 创建情节线行 | `POST /plotlines` |
+| 删除情节线 | `[data-plotline-id]`（每行 × 按钮） | 删除情节线及其节拍 | `POST /plotlines/delete` |
+| 多格式导出 | `[data-action="export-multi"]` | 弹窗选 MD/DOCX/EPUB + 附录勾选 + 单章/全书 | `GET /export/{markdown\|docx\|epub}` |
+| 章节拖拽把手 | `[data-drag-chapter]` | 拖到目标章节标题上 → 插到其前 | `POST /chapters/reorder` |
+
+新增导出/结构端点全部走 F074 Origin 白名单与 `send()`/`sendFile` 同款 CORS 逻辑，非白名单 Origin 一律 403。
+
 ---
 
 *文档最后更新: 2026-07-13*
