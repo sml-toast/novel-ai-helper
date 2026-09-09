@@ -4,8 +4,15 @@
 // 若继续用 location.hostname 拼接，页面从 localhost 打开时该名称可能被解析为 IPv6 ::1，
 // 而 API 并未监听 ::1，会直接连不上。因此固定回连 127.0.0.1。
 // 确需指向其他地址时，在页面注入 window.NOVEL_API_HOST 覆盖。
+// 生产同源反代（nginx 等把 /api/ 转发到 API 端口）：设 window.NOVEL_API_RELATIVE='1'
+// 后，API 走同源相对路径 /api/novel，避免前端硬编码 127.0.0.1（远程浏览器会打到自己本机回环）。
+// 本地开发不设置该标志，行为不变（127.0.0.1:8787）。
+const RELATIVE = window.NOVEL_API_RELATIVE === '1';
 const apiHost = window.NOVEL_API_HOST || '127.0.0.1';
-export const apiBase = `${location.protocol}//${apiHost}:${window.NOVEL_API_PORT || 8787}/api/novel`;
+const apiPort = window.NOVEL_API_PORT || 8787;
+export const apiBase = RELATIVE
+  ? '/api/novel'
+  : `${location.protocol}//${apiHost}:${apiPort}/api/novel`;
 
 import { store } from './store.js';
 

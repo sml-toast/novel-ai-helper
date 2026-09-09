@@ -12,13 +12,26 @@
  */
 
 import './load-env.js'; // 必须在读取 process.env 的其它 import 之前（F073 配套）
-import { createReadStream, existsSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** 项目根目录：本文件位于 <root>/server/ 下，故向上退一级。 */
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 生产同源反代支持（部署相关，本地开发无感）：
+ * 设置 NOVEL_PUBLIC_API_RELATIVE=1 后，给前端 HTML 注入
+ * `window.NOVEL_API_RELATIVE='1'`，使 API 走同源相对路径 /api/novel
+ * （由前端反代 /api/ → API 端口），避免远程浏览器把请求打到自己本机回环。
+ * 不设该变量时完全不注入，本地 127.0.0.1:8787 行为不变。
+ */
+const PUBLIC_API_RELATIVE = process.env.NOVEL_PUBLIC_API_RELATIVE === '1';
+const DEPLOY_CONFIG_TOKEN = '<!--NOVEL_DEPLOY_CONFIG-->';
+const DEPLOY_CONFIG_SNIPPET = PUBLIC_API_RELATIVE
+  ? "<script>window.NOVEL_API_RELATIVE='1';</script>"
+  : '';
 
 /** 监听端口，默认 5175。 */
 const PORT = Number(process.env.NOVEL_WEB_PORT || 5175);
@@ -163,6 +176,17 @@ const server = createServer((req, res) => {
   // HEAD 请求只回头部，不回包体。
   if (method === 'HEAD') {
     res.end();
+    return;
+  }
+
+  // 生产注入：同源反代模式下，给入口 HTML 注入前端相对路径标志。
+  // 仅当 NOVEL_PUBLIC_API_RELATIVE=1 且请求的是 novel-ai.html 时触发；否则原样流式返回。
+  if (PUBLIC_API_RELATIVE && resolved.filePath.endsWith('novel-ai.html')) {
+    const html = readFileSync(resolved.filePath, 'utf8').replace(
+      DEPLOY_CONFIG_TOKEN,
+      DEPLOY_CONFIG_SNIPPET
+    );
+    res.end(html);
     return;
   }
 

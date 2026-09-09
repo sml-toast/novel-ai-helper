@@ -12,6 +12,7 @@
   <!-- F077：只给默认值，不无条件覆盖 —— Playwright 夹具经 addInitScript 注入的
        测试端口（8788）先于本脚本执行，若这里直接赋值会把端口改回 8787，
        页面就会连去开发进程/开发库，测试与数据彻底脱节。 -->
+  <!--NOVEL_DEPLOY_CONFIG-->
   <script>window.NOVEL_API_PORT = window.NOVEL_API_PORT || 8787;</script>
   <script type="module" src="./novel-ai.js"></script>
 </head>
