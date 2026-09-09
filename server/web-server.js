@@ -11,6 +11,7 @@
  * @module server/web-server.js
  */
 
+import './load-env.js'; // 必须在读取 process.env 的其它 import 之前（F073 配套）
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';

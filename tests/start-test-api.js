@@ -35,4 +35,8 @@ for (const suffix of ['', '-wal', '-shm']) {
 
 console.log(`[test-db] 已重置测试库：${TEST_DB_PATH}（开发库 .data/novel-ai.sqlite 不受影响）`);
 
+// 护栏：测试进程禁止加载项目根目录的 .env，避免把真实 AI 密钥带入测试环境、
+// 冲掉 Playwright 注入的隔离变量。load-env.js 见 NOVEL_NO_DOTENV=1 会跳过。
+process.env.NOVEL_NO_DOTENV = '1';
+
 await import('../server/novel-api.js');

@@ -1,3 +1,4 @@
+import './load-env.js'; // 必须在读取 process.env 的其它 import 之前（F073 配套）
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
