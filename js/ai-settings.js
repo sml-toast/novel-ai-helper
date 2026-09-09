@@ -9,6 +9,7 @@ import { flashAssist } from './ui.js';
 import { showModal } from './modal.js';
 import { renderProject, renderChapters } from './render-core.js';
 import { renderEditor } from './editor.js';
+import { isLocalBaseUrl, renderLocalPresets } from './local-model.js';
 
 const CLEAR_API_KEY = '__CLEAR__';
 
@@ -19,6 +20,8 @@ export function renderAiKeyStatus() {
   if (status) setKeyStatus(status, 'warn', '密钥状态：读取中…');
   if (input) input.value = '';
   loadMasterKeyMeta();
+  // F093：本地模型预设（随密钥状态一起刷新，API 从离线恢复后能重试加载）
+  renderLocalPresets();
 
   if (!status) return;
   if (!store.apiOnline || !store.state.project) {
@@ -26,8 +29,13 @@ export function renderAiKeyStatus() {
     return;
   }
   if (!store.state.project.hasApiKey) {
-    setKeyStatus(status, 'warn', '未配置密钥 · 当前为本地演示模式（mock），AI 建议为内置示例数据，非真实模型输出。');
-    if (input) input.placeholder = 'API Key（留空表示不修改）';
+    // F093：本地端点没有密钥是**正常配置**，不能再报「未配置密钥」（会误导用户去填 Key）。
+    // 真正要走 mock 的只有「既没 Key 又不是本地端点」这一种情况。
+    const localEndpoint = isLocalBaseUrl(store.state.project.ai_base_url);
+    setKeyStatus(status, localEndpoint ? 'ok' : 'warn', localEndpoint
+      ? '本地模型模式：地址为本机/局域网，未配置密钥也可调用。若仍出现 mock 结果，请点「测试连接」排查。'
+      : '未配置密钥 · 当前为本地演示模式（mock），AI 建议为内置示例数据，非真实模型输出。');
+    if (input) input.placeholder = localEndpoint ? 'API Key（本地模型可留空）' : 'API Key（留空表示不修改）';
     return;
   }
 
@@ -150,7 +158,11 @@ export async function saveAiSettings() {
       store.state.project.decryptable = result.key?.decryptable !== false;
     }
     renderAiKeyStatus();
-    flashAssist('AI 配置已保存', `当前模型：${result.settings.ai_model}${apiKey ? ' · 密钥已加密写入项目库' : ' · 密钥保持不变'}`);
+    // F093：本地模型没填 Key 是正常配置，提示语要区分「保持原密钥」与「本就不需要」
+    const keyNote = apiKey
+      ? ' · 密钥已加密写入项目库'
+      : (isLocalBaseUrl(result.settings.ai_base_url) ? ' · 本地模型无需密钥' : ' · 密钥保持不变');
+    flashAssist('AI 配置已保存', `当前模型：${result.settings.ai_model}${keyNote}`);
   } catch (error) {
     flashAssist('AI 配置失败', error.message, 'danger');
   }

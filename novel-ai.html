@@ -360,10 +360,23 @@
           </div>
           <div class="form-grid">
             <input id="aiBaseUrlInput" type="text" placeholder="OpenAI-compatible baseURL（可留空使用 mock）" />
-            <input id="aiModelInput" type="text" placeholder="模型名称" value="mock-novel-copilot" />
-            <input id="aiApiKeyInput" type="password" placeholder="API Key（留空表示不修改）" autocomplete="new-password" spellcheck="false" />
+            <input id="aiModelInput" type="text" placeholder="模型名称" value="mock-novel-copilot" list="aiModelOptions" />
+            <input id="aiApiKeyInput" type="password" placeholder="API Key（云模型必填；本地模型可留空）" autocomplete="new-password" spellcheck="false" />
+            <datalist id="aiModelOptions"></datalist>
             <input id="promptTaskInput" type="text" placeholder="任务类型，如 polish" value="polish" />
             <input id="promptTitleInput" type="text" placeholder="模板标题" value="拟人化润色模板" />
+          </div>
+          <!-- F093 本地模型：预设一键填入 + 连接检测。本地模型通常不需要 API Key，留空即可调用 -->
+          <div class="secret-guide">
+            <p class="secret-tip">
+              本机模型（Ollama / LM Studio / llama.cpp）：点预设一键填入地址，再点「测试连接」。
+              <strong>本地模型通常无需 API Key，留空即可</strong>；连接失败会给出具体地址与启动指引。
+            </p>
+            <div class="toolbar-actions" id="localPresetBar"></div>
+            <div class="toolbar-actions">
+              <button type="button" data-action="test-ai-connection">测试连接</button>
+            </div>
+            <p class="secret-status" id="aiConnectionStatus">尚未测试连接</p>
           </div>
           <div class="secret-guide">
             <p class="secret-status" id="aiKeyStatus">密钥状态：读取中…</p>

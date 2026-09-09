@@ -30,7 +30,4 @@ export const taskLabels = {
   world: '世界观设定扩展'
 };
 
-// 旧固定布局坐标（F089 前使用）。F091 起图谱改为力导向布局，此表仅为兼容保留
-export const nodePositions = [[42, 98], [218, 46], [426, 92], [142, 226], [370, 242], [560, 174], [520, 286], [260, 150]];
-
 export const graphTypeLabels = { all: '综合图', knowledge: '知识图', character: '人物图', timeline: '时间线', world: '世界观' };

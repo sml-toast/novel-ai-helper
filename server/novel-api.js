@@ -3,9 +3,12 @@ import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
 import { addEntityAlias, addAiFeedback, addAnnotation, addCharacterProfile, addGlossaryTerm, addKnowledge, addRelation, addSceneLocation, addTimelineEvent, addTodo, addWorldSetting, addWritingProgress, archiveChapter, buildGraph, bulkAddKnowledge, checkSensitiveText, countChapters, createChapter, createMilestone, createProject, deleteKnowledge, endWritingSession, exportChapter, exportProject, get, getAiProject, getBootstrapData, getDashboardStats, getCurrentProjectId, getPreviousChapterTail, getProjectKeyMeta, getRecallForChapter, getWritingSessionStats, importProject, listAiTasks, listAnnotations, listChapterMentions, listEntityAliases, listEntityBacklinks, listAuditLogs, listChapterVersions, listCharacters, listGlossary, listPlatformConfigs, listPromptTemplates, listPublishTasks, listScenes, listTimeline, listTodos, listWorldSettings, listWritingProgress, deleteEntityAlias, loadProjectSecret, projectExists, recordAiTask, rescanProjectMentions, rollbackChapter, saveChapter, saveDraft, searchAll, startWritingSession, toggleTodo, updateAiSettings, upsertPlatformConfig, upsertPromptTemplate, upsertWritingGoal } from './novel-db.js';
 import { resolveProjectId } from './novel-project.js';
-import { runAiTask, streamAiTask } from './novel-ai-provider.js';
+import { runAiTask } from './novel-ai-provider.js';
+import { streamAiTask } from './novel-ai-stream.js';
 import { ALLOWED_ORIGINS, MAX_BODY_BYTES, authMiddleware } from './novel-auth.js';
 import { getMasterKeyPath, loadOrCreateMasterKey, masterKeyFingerprint } from './novel-secret.js';
+import { LOCAL_PRESETS } from './novel-local-model.js';
+import { testConnection } from './novel-ai-probe.js';
 import { createPublishTask, listPublishAdapters, retryPublish, scanDuePublishTasks, simulatePublish } from './novel-publish.js';
 import { addForeshadow, listForeshadows, listOpenForeshadows, scanForeshadowHints, transitionForeshadow } from './novel-foreshadow.js';
 import { exportDocx, exportEpub, exportMarkdown } from './novel-export.js';
@@ -186,6 +189,41 @@ async function handle(req, res) {
         fingerprint: masterKeyFingerprint(),
         content: readFileSync(getMasterKeyPath()).toString('base64')
       });
+    }
+
+    /**
+     * F093：本地模型预设（Ollama / LM Studio / llama.cpp / vLLM）。
+     * 由服务端下发而非前端硬编码 —— 预设与「报错时提示该启动哪个服务」共用同一份
+     * 定义（见 novel-local-model.js），两处各写一份必然漂移。
+     */
+    if (req.method === 'GET' && url.pathname === '/api/novel/settings/ai/presets') {
+      return send(res, 200, { presets: LOCAL_PRESETS });
+    }
+
+    /**
+     * F093：连接检测 + 模型枚举（设置面板「测试连接」）。
+     *
+     * 只探测连通性和模型列表，**不发正文**（稿件不外发）。
+     * 未传 apiKey 时沿用项目库已保存的密钥 / 环境变量，用户不必为测试重填一遍。
+     * 枚举失败不影响保存：模型名允许手填，故这里统一返回 200 + ok:false。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/novel/settings/ai/test') {
+      const body = await readJson(req);
+      const saved = getAiProject(projectId);
+      const secret = loadProjectSecret(projectId);
+      const keyFromBody = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+      if (!keyFromBody && secret.error) {
+        // 主密钥解不开时测出来的结果没有意义，直接把可修复原因告诉用户
+        return send(res, 200, {
+          result: { ok: false, kind: 'secret-error', endpoint: saved.ai_base_url || '(未填写)', message: secret.error, models: [], modelExists: null, latencyMs: 0 }
+        });
+      }
+      const result = await testConnection({
+        baseUrl: String(body.baseUrl || '').trim() || saved.ai_base_url || '',
+        model: String(body.model || '').trim() || saved.ai_model || '',
+        apiKey: keyFromBody || secret.apiKey || process.env.NOVEL_AI_API_KEY || ''
+      });
+      return send(res, 200, { result });
     }
 
     if (req.method === 'GET' && url.pathname === '/api/novel/prompts') {

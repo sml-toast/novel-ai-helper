@@ -25,6 +25,7 @@ import { refreshDashboard, loadHistory, loadAudit, saveGoal, addProgress } from 
 import { saveAiSettings, clearApiKey, exportMasterKey, savePrompt, loadPrompts } from './ai-settings.js';
 import { addCharacter, loadCharacters, addTimeline, loadTimeline, addScene, loadScenes, addWorld, loadWorld } from './story-bible.js';
 import { openLogDrawer, compressLogs, clearLogs, renderLogPanel } from './log.js';
+import { testAiConnection } from './local-model.js';
 import { toggleFocusMode, exitFocusMode, changeFontSize, cycleLineWidth } from './focus-mode.js';
 
 document.addEventListener('click', event => {
@@ -165,6 +166,8 @@ document.addEventListener('click', event => {
   if (action === 'save-ai-settings') return saveAiSettings();
   if (action === 'clear-api-key') return clearApiKey();
   if (action === 'export-master-key') return exportMasterKey();
+  // F093：本地模型连接检测（预设按钮的点击在 local-model.js 内部用事件委托处理）
+  if (action === 'test-ai-connection') return testAiConnection();
   if (action === 'save-prompt') return savePrompt();
   if (action === 'load-prompts') return loadPrompts();
   if (action === 'bulk-knowledge') return bulkKnowledge();

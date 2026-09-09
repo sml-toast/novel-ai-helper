@@ -3,10 +3,9 @@ import { escapeHtml } from './utils.js';
 import { openDrawer } from './ui.js';
 import { store } from './store.js';
 
-export const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
-// NOTE（F089 梳理时发现）：logLevel 读取后从未被使用（日志过滤走 getLogs 的入参），
-// 属疑似死代码，按「搬运不重写」原则原样保留，待总监裁定后再清理。
-export const logLevel = parseInt(localStorage.getItem('novel_log_level') || '0', 10);
+// F093 死代码清理：原 logLevel（读 localStorage 后从未被使用，过滤走 getLogs 入参）已删除。
+// LOG_LEVELS 与 getLogs 只在模块内被 renderLogPanel 使用，故收敛为私有，只导出真正有外部消费方的。
+const LOG_LEVELS = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
 let logEntries = [];
 const MAX_LOG_ENTRIES = 500;
 
@@ -31,7 +30,7 @@ export function log(level, category, message) {
   console.log(`[${level}] [${category}] ${message}`);
 }
 
-export function getLogs(levelFilter) {
+function getLogs(levelFilter) {
   let entries = JSON.parse(localStorage.getItem('novel_logs') || '[]');
   if (levelFilter !== undefined) {
     entries = entries.filter(e => LOG_LEVELS[e.level] >= LOG_LEVELS[levelFilter]);
