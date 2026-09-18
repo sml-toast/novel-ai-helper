@@ -1,3 +1,4 @@
+// @ts-check
 // 首屏装配：/bootstrap 载入 + 全量渲染编排（renderAll）。
 // F089：loadBootstrap 同时被 importProjectFile / switchProject 复用（切项目即整体重载）。
 import { apiFetch } from './api.js';

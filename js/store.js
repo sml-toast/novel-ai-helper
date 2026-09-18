@@ -1,3 +1,4 @@
+// @ts-check
 // 全局可变应用状态（F089 模块化）。
 //
 // 原 novel-ai.js 的顶层 let 变量（state / activeChapter / apiOnline /

@@ -1,9 +1,11 @@
+// @ts-check
 // 章节/项目切换：dirty 拦截 + 会话分段 + 章节采纳；新建/归档章节。
 import { apiFetch } from './api.js';
 import { store } from './store.js';
 import { flashAssist } from './ui.js';
 import { confirmDirtyLeave, checkLocalDraft } from './draft.js';
 import { resetAutoSave } from './autosave.js';
+import { $input } from './dom.js';
 import { renderChapters, renderProjectSwitcher } from './render-core.js';
 import { renderEditor } from './editor.js';
 import { endWritingSession, startWritingSession } from './session.js';
@@ -57,7 +59,7 @@ export function adoptChapter(chapter) {
 }
 
 export async function createChapter() {
-  const title = document.querySelector('#chapterTitleInput').value.trim();
+  const title = $input('#chapterTitleInput').value.trim();
   if (!store.apiOnline) return flashAssist('新建章节', 'API 未启动，无法写入 SQLite。', 'warning');
   try {
     const result = await apiFetch('/chapters', { method: 'POST', body: JSON.stringify({ title, content: '新章节正文待补充。' }) });

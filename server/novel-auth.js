@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-auth.js —— 零依赖 API 鉴权中间件（T005 / 需求 F074）
  *

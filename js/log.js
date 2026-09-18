@@ -1,7 +1,9 @@
+// @ts-check
 // ── Logging System ──
 import { escapeHtml } from './utils.js';
 import { openDrawer } from './ui.js';
 import { store } from './store.js';
+import { $select } from './dom.js';
 
 // F093 死代码清理：原 logLevel（读 localStorage 后从未被使用，过滤走 getLogs 入参）已删除。
 // LOG_LEVELS 与 getLogs 只在模块内被 renderLogPanel 使用，故收敛为私有，只导出真正有外部消费方的。
@@ -74,7 +76,7 @@ export function renderLogPanel() {
   const container = document.getElementById('logList');
   if (!container) return;
 
-  const levelFilter = document.getElementById('logLevelFilter')?.value || 'DEBUG';
+  const levelFilter = $select('#logLevelFilter')?.value || 'DEBUG';
   const entries = getLogs(levelFilter);
 
   const levelColors = {

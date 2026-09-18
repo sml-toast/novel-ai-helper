@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 静态文件服务器 —— 替代原 blog-design 的 vite dev server。
  *

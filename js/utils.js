@@ -1,3 +1,4 @@
+// @ts-check
 // 通用纯函数工具：HTML 转义、日期格式化、文件下载。
 
 // ── HTML sanitization ──

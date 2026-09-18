@@ -1,3 +1,4 @@
+// @ts-check
 // API 离线兜底数据：后端未启动时页面仍可完整展示（本地演示模式）。
 
 export const fallbackState = {

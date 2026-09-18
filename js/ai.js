@@ -1,3 +1,4 @@
+// @ts-check
 // AI 调用：SSE 流式任务（F082/T015，可中断 + JSON 通道降级）与 AI 反馈。
 import { apiBase, apiFetch } from './api.js';
 import { store } from './store.js';

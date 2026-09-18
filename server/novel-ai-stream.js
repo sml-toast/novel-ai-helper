@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 流式通道（F082 / T015 + F093 本地模型）—— 从 novel-ai-provider.js 拆出。
  *

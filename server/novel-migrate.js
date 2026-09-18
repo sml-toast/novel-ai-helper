@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-migrate.js —— 零依赖 schema 版本迁移框架（T004）
  *

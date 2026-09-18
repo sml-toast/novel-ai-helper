@@ -1,3 +1,4 @@
+// @ts-check
 // 写作页分区导航 + 整理视图 + 录入表单折叠（零依赖，事件委托）
 // 仅做平滑滚动、滚动高亮、辅助模块折叠、录入表单渐进式披露；不改动既有 DOM 结构与交互。
 (function () {
@@ -35,7 +36,7 @@
   }
 
   nav.addEventListener('click', function (e) {
-    var link = e.target.closest('.nav-link');
+    var link = /** @type {Element} */ (e.target).closest('.nav-link');
     if (!link) return;
     var el = document.querySelector(link.getAttribute('href'));
     if (!el) return;

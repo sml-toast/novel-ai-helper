@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * mock / 降级输出（从 novel-ai-provider.js 拆出）。
  *

@@ -1,3 +1,4 @@
+// @ts-check
 // 节点图：数据拉取、统计与节点详情。布局与交互（力导向/拖拽/缩放）在
 // graph-view.js / graph-layout.js —— 本模块保持对外契约不变：
 // renderNodeMap(graph) 渲染入口、showNodeDetail(nodeId) 供 events.js 点击委托调用。

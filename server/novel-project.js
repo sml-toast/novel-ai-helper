@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-project.js —— 多项目上下文解析（T011 / 需求 F079）
  *

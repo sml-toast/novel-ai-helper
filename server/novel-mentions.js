@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-mentions.js —— 中文实体识别扫描器（F080 / T013）
  *

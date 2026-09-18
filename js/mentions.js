@@ -1,9 +1,11 @@
+// @ts-check
 /* ══════════ F080 本章提及与负例管理 ══════════ */
 import { apiFetch } from './api.js';
 import { store } from './store.js';
 import { escapeHtml } from './utils.js';
 import { flashAssist } from './ui.js';
 import { showModal } from './modal.js';
+import { $input } from './dom.js';
 
 export const MENTION_TYPE_LABELS = {
   character: '角色', knowledge: '知识', scene: '场景',
@@ -63,7 +65,7 @@ export async function addNegativeAlias(surface, entityType, entityId) {
     ]
   });
   if (choice !== 'ok') return;
-  const alias = document.querySelector('#negativeAliasInput')?.value.trim();
+  const alias = $input('#negativeAliasInput')?.value.trim();
   if (!alias) return flashAssist('登记负例', '负例内容为空，未登记。', 'warning');
   try {
     const result = await apiFetch('/aliases', {

@@ -1,3 +1,4 @@
+// @ts-check
 // 通用 UI 基元：抽屉开关、AI 建议流（assist feed）渲染与提示卡片注入。
 import { fallbackAssist } from './fallback-data.js';
 import { assistFeed } from './dom.js';

@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-secret.js —— 零依赖 AI 密钥加密（需求 F075）
  *

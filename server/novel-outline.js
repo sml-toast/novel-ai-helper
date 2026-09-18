@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-outline.js —— 大纲树 / 场景卡片 / 情节网格（F083）
  *

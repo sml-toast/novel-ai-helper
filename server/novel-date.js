@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-date.js —— 本地日期工具（F086 连续打卡）
  *

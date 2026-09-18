@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-epub.js —— 最小合法 EPUB 3 生成（F092）
  *

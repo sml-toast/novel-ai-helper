@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * 分层 Prompt 构建（F081 / T014）—— 从 novel-ai-provider.js 拆出，独立成模块。
  *

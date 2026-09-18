@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-zip.js —— 零依赖 ZIP 容器构建器（F092）
  *

@@ -1,7 +1,8 @@
+// @ts-check
 // 版本历史：加载、回滚、里程碑快照（F086）。
 import { apiFetch } from './api.js';
 import { store } from './store.js';
-import { editor } from './dom.js';
+import { editor, $input } from './dom.js';
 import { escapeHtml } from './utils.js';
 import { flashAssist } from './ui.js';
 import { showModal } from './modal.js';
@@ -76,7 +77,7 @@ export async function createMilestoneSnapshot() {
     ]
   });
   if (choice !== 'ok') return;
-  const name = document.querySelector('#milestoneNameInput')?.value.trim();
+  const name = $input('#milestoneNameInput')?.value.trim();
   if (!name) return flashAssist('里程碑快照', '快照名称为空，未打点。', 'warning');
   try {
     const result = await apiFetch(`/chapters/${store.activeChapter.id}/milestone`, {

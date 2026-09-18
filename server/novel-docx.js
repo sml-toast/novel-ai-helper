@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * server/novel-docx.js —— 最小合法 DOCX 生成（F092）
  *
