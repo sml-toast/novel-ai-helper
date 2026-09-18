@@ -60,6 +60,25 @@ A：典型链路（以「续写建议」`continue-writing` 为例）：
 4. **编号**：在 `doc/function-docs/functions.md` 补 F 编号，在 `button-reference.md` 补 B 编号；PRD/design 同步。
 5. **测试**：在 `tests/` 加 Playwright 用例（走 5176/8788 独立库），跑 `npm test` 确认 75+ 仍过。
 
+
+**Q：如何给一个模块加上类型检查？**
+A：本项目用 **增量策略**（`tsconfig.json` 里 `checkJs: false`，逐文件开白名单）——
+全量打开会报 194 条，会让 CI 长期变红。给一个模块接类型检查只要 4 步：
+1. 文件首行加 `// @ts-check`；
+2. 跑 `npx tsc --noEmit`，只看该文件的报错（注意行号已因新增标注而 +1）；
+3. 用 `js/dom.js` 的类型化 helper 替换裸 `document.querySelector(...)`——
+   `$input` / `$textarea` / `$select` / `$form` / `$el` / `$all`，事件目标用 `eventTarget(e)`。
+   这类「`Element` 上取 `.value`」的 TS2339 占了全部错误的 80%，是批量推进的关键；
+4. 该文件不再报错即完成。若有难修的错误，**先撤掉标注**，不要留下红 CI。
+
+参考样板：`js/chapters.js`、`js/log.js`、`js/mentions.js`、`js/versions.js`（借 helper 一次做绿）。
+剩余待接入清单见 `doc/development-docs/development.md` §7.1。
+
+**Q：格式化为什么不能一把梭？**
+A：`npm run format` 会重排 65 个文件（63 个 `js` + `novel-ai.html` + `novel-ai.css`）。
+`novel-ai.html` 里有手工排布的吸顶导航 / 分区标题 / 折叠工具栏，重排会产生与功能无关的巨型 diff。
+所以 `format:check` **没有进 CI**；要做的话请单独开一个纯格式化提交，并用 75 条测试回归验证。
+
 ---
 
 ## 4. 避坑清单
@@ -91,7 +110,7 @@ A：典型链路（以「续写建议」`continue-writing` 为例）：
 | AI 降级 | 未配置 provider → 本地 mock | 无 Key 也能演示全部功能；界面标注「本地演示模式」。 |
 | 本地模型 | F093 OpenAI 兼容，免 Key | Ollama/LM Studio/llama.cpp 统一接入，零密钥门槛。 |
 | 测试隔离 | 独立端口/库 + busy_timeout 放开并发 | SQLite 并发写靠 busy_timeout 保障；独立端口/库防用例串扰。 |
-| 工程化方向（已拍板） | 加 TS 类型检查（`tsc --noEmit` / `checkJs` 经 JSDoc）、ESLint+Prettier(devDeps)、CI(GitHub Actions)、多环境(`.env`+`.env.example`)、可选构建 | **不破零依赖红线**：工具只作 devDependency，运行时依旧零依赖。 |
+| 工程化现状（已落地） | TS 增量类型检查（`checkJs:false` + 逐文件 `// @ts-check`，覆盖率 32/62）、ESLint(0 error)、Prettier、CI(GitHub Actions)、多环境(`.env`+`.env.example`) | **不破零依赖红线**：工具只作 devDependency，运行时依旧零依赖。一键门禁 `npm run check`。 |
 
 ---
 

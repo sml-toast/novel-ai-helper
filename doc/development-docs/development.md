@@ -9,7 +9,7 @@
 | 零依赖红线 | 运行时只用 Node 内置模块 + 浏览器原生 API；唯一 devDependency 是 `@playwright/test` |
 | 配套文档 | 架构 `doc/architecture/architecture.md` · 测试 `doc/testing-docs/testing.md` · 部署 `doc/deployment/deployment.md` |
 
-> 本文件描述**目标工程状态**：零依赖栈保持不变，新增的工程化能力（TypeScript checkJs / ESLint+Prettier / CI / 多环境 .env）为已拍板方向，落地步骤见第七章。其余章节均基于当前代码事实。
+> 本文件描述**当前工程状态**：零依赖栈保持不变，工程化能力（TypeScript 增量类型检查 / ESLint + Prettier / CI / 多环境 .env）**已于 2026-09-17 落地**，第七章为 As-Built 说明。其余章节均基于当前代码事实。
 
 ## 一、环境要求
 
@@ -36,7 +36,10 @@ npm run dev                        # 同时拉起 API(8787) + Web(5175)
 | `npm run api` / `npm run web` | 单独启动 API / 静态服务 |
 | `npm run test` | Playwright 全量用例（自动拉起 5176/8788 测试服务与独立测试库） |
 | `npm run test:ui` / `npm run test:report` | UI 调试模式 / 打开上次 HTML 报告（test-results/playwright-report） |
-| `npm run typecheck`（工程化新增·待落地） | `tsc --noEmit` 对 JS 做 JSDoc 类型检查，不产出文件 |
+| `npm run typecheck` | `tsc --noEmit` 对 JS 做 JSDoc 类型检查，不产出文件（增量：仅 `// @ts-check` 标注的文件参与） |
+| `npm run lint` / `lint:fix` | ESLint 检查 / 自动修复（当前 0 error） |
+| `npm run format` / `format:check` | Prettier 规范化 / 校验（`format:check` 尚未全绿，见 §7.2） |
+| `npm run check` | **一键门禁**：lint + typecheck + test |
 
 > **改 Web 端口必须用 `npm run dev`**：API 的 Origin 白名单需要感知 `NOVEL_WEB_PORT`（`scripts/novel-dev.sh` 会同步传给 API 进程）。单独 `npm run web` 改端口而 API 不知情时，页面请求会被 403。
 
@@ -272,116 +275,106 @@ curl -s -X POST http://127.0.0.1:8787/api/novel/ai \
 | 端口被占用 | 上次进程残留 | `lsof -i :8787 -i :5175` 找到并结束；`npm run dev` 的 trap 正常情况自动回收 |
 | 启动即退出报「迁移失败」 | schema 迁移半途失败已回滚 | 看报错中的迁移名；修复后重跑；必要时用备份库恢复（见部署文档） |
 
-## 七、工程化落地（已拍板方向 · 目标状态与步骤）
+## 七、工程化落地（As-Built · 2026-09-17 已落地）
 
-保持零依赖运行时栈不变，工程化能力只作为 **devDependency / 配置 / CI** 叠加，不引入运行时依赖。
+状态：**已落地**。所有新增项均为 devDependency，**运行时依赖仍为零**。
+一键门禁：`npm run check` = `lint` + `typecheck` + `test`，当前**全绿**
+（lint 0 error、`tsc --noEmit` 通过、75 tests passed）。
 
-### 7.1 TypeScript 类型检查（checkJs）
+### 7.1 TypeScript 类型检查（增量策略）
 
-目标：用 `tsc --noEmit` 对现有 JS 做 JSDoc 类型检查，零运行时成本、无需改写文件为 .ts。
+现状：`tsconfig.json`，**`checkJs: false` + 逐文件 `// @ts-check` 白名单**。
 
-1. `package.json` 增加 devDependency：`"typescript": "^5.x"`，脚本：
-   ```json
-   "scripts": {
-     "typecheck": "tsc --noEmit",
-     "test": "playwright test"
-   }
-   ```
-2. 新增 `tsconfig.json`：
-   ```json
-   {
-     "compilerOptions": {
-       "allowJs": true,
-       "checkJs": true,
-       "noEmit": true,
-       "strict": true,
-       "module": "nodenext",
-       "moduleResolution": "nodenext",
-       "target": "ES2023",
-       "lib": ["ES2023", "DOM", "DOM.Iterable"],
-       "skipLibCheck": true,
-       "types": ["node"]
-     },
-     "include": ["server/**/*.js", "js/**/*.js", "tests/**/*.js", "scripts/**/*.js"]
-   }
-   ```
-3. 渐进式：`checkJs` 初期用 `// @ts-nocheck` 在噪声文件上临时豁免，逐步补 JSDoc 后移除；优先给 `novel-db.js` / `novel-api.js` / 公共函数加 `@param`/`@returns`。
-4. 编辑器：`jsconfig.json`（同 `include`）让 IDE 实时提示类型错误。
+**为什么不开全量 `checkJs`**：实测把 62 个源码文件全部打开 `@ts-check` 会报 **194 条**错误。
+全量开启会让 CI 长期变红、并淹没新增错误，故采用 TypeScript 官方推荐的存量迁移策略——
+逐文件接入，既保证 `npm run typecheck` 当前即绿，又让已接入的文件获得持续保护。
+
+`tsconfig.json` 要点：`allowJs: true` / `checkJs: false` / `noEmit: true` / `strict: true` /
+`module: nodenext` / `lib: [ES2023, DOM, DOM.Iterable]` / `types: [node]`；
+`include` 覆盖 `server|js|tests|scripts`。
+
+**当前覆盖率：32 / 62**（server 15、js 17）。已接入清单见提交 `413c7ce`。
+
+全量开启时的错误构成（共 194 条）：
+
+| 错误码 | 条数 | 典型含义 |
+|---|---|---|
+| TS2339 | 155 | 属性不存在（如 `Element` 上取 `.value`）—— **占 80%** |
+| TS2345 | 16 | 实参类型不匹配 |
+| TS2322 | 9 | 赋值类型不匹配 |
+| TS2365 | 7 | 比较运算数类型不匹配 |
+| TS2769 / TS2363 / TS2741 / TS2739 / TS2353 | 各 1–2 | 重载不匹配 / 算术运算数 / 缺属性 |
+
+**最大一类错误的根治办法（已就位）**：`document.querySelector()` 的静态返回类型是
+`Element | null`，直接取 `.value` / `.hidden` / `.checked` 必然报 TS2339。
+`js/dom.js` 已提供类型化查询 helper：
+
+```js
+import { $input, $textarea, $select, $form, $el, $all, eventTarget } from './dom.js';
+
+$input('#chapterTitleInput').value.trim();   // 取代 document.querySelector('#x').value
+$select('#logLevelFilter').value;            // 取代 document.getElementById('x').value
+$el('#modalMask').hidden = true;             // 取代裸 querySelector + .hidden
+const li = eventTarget(e)?.closest('.nav-link');  // 取代 e.target.closest(...)
+```
+
+helper 是**行为等价的纯类型层改动**：内部仍是同一个 `querySelector`，选择器串不变，
+查不到时的报错行为与原先一致（同为空引用报错）。因此替换低风险、可批量推进。
+
+**接入一个新模块的步骤（4 步）**：
+
+1. 文件首行加 `// @ts-check`；
+2. `npx tsc --noEmit` 查看该文件的错误（行号以加了标注后的文件为准）；
+3. 用 `js/dom.js` 的 helper 替换裸 `document.querySelector(...)`；纯事件目标用 `eventTarget(e)`；
+4. 无错误即完成；若剩余错误难修，先撤掉该文件的标注，留待后续。
+
+**剩余待接入 36 个模块**（按错误数量升序，越靠前越便宜）：
+
+- `js/`：`ai-settings` `api` `autosave` `dashboard` `draft` `editor` `editorial` `events`
+  `export-menu` `focus-mode` `foreshadow` `graph-view` `knowledge` `local-model` `outline`
+  `plot-grid` `projects` `publish` `render-core` `session` `story-bible`
+- `server/`：`novel-ai-provider` `novel-api` `novel-db` `novel-export` `novel-foreshadow`
+  `novel-local-model` `novel-publish` `novel-recall` `novel-scheduler`
+
+> 注：`js/{chapters,log,mentions,modal,versions}.js` 与 `js/nav.js` 已于本轮接入；
+> 其中 `chapters/log/mentions/versions` 是借助 dom helper 一次做绿的，可作为批量推进的样板。
 
 ### 7.2 ESLint + Prettier
 
-目标：统一风格与捕获低级错误，规则从松到严。
+**ESLint**（flat config，`eslint.config.js`）：按目录分环境——`server/` → node、`js/` → browser、
+`tests/` → **node + browser**（测试在 `page.evaluate()` 回调里使用 `window`，只给 node 环境会误报 `no-undef`）。
+**当前 0 error / 7 warning**；未用变量降级为 warning（作为死代码提示保留），
+因此 `npm run lint` 可以直接作为 CI 门禁。
 
-1. devDependencies：`"eslint": "^9.x"`、`"prettier": "^3.x"`、`"eslint-config-prettier"`、`"globals"`。
-2. `package.json` 脚本：
-   ```json
-   "scripts": {
-     "lint": "eslint .",
-     "format": "prettier --write \"**/*.{js,json,md,css,html}\""
-   }
-   ```
-3. `eslint.config.js`（flat config）：环境 `node` + `browser` + `es2023`，开启 `no-undef`、`no-unused-vars`；**禁止 `no-restricted-imports` 规则把第三方运行时包列入白名单之外**（守住零依赖红线）——任何 `import` 非 `node:` 前缀的非内置包即报错。
-4. `.prettierrc`：2 空格、单引号、尾逗号、`LF` 换行；`prettier --check` 进 CI。
+**Prettier**（`.prettierrc.json` + `.prettierignore`）：`printWidth 100` / 单引号 / 尾逗号 / `LF`；
+忽略 `doc/**` 与 `*.md`（文档排版交人工）、`package-lock.json`（避免锁文件无意义大 diff）。
+
+> ⚠️ **`format:check` 尚未全绿，故未纳入 CI**。存量 65 个文件不符合 prettier 风格
+> （63 个 `js` + `novel-ai.html` + `novel-ai.css`）。**未做全量 `npm run format`** 的原因：
+> 会重排整个 `novel-ai.html`（含手工排布的吸顶导航、分区标题、折叠工具栏结构），
+> 收益低于评审成本，且属于与功能无关的巨型 diff。
+> 若要做，建议**单独一个纯格式化提交**（无逻辑变更，可跑 75 条测试回归验证），
+> 并决定 html/css 是纳入格式化还是加入 `.prettierignore`。
 
 ### 7.3 CI 工作流（GitHub Actions）
 
-目标：每次 push / PR 自动类型检查 + Lint + 测试。
+`.github/workflows/ci.yml`（已就位）：
 
-`.github/workflows/ci.yml`：
-
-```yaml
-name: CI
-on: [push, pull_request]
-jobs:
-  verify:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22.5.0', cache: 'npm' }
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: npm run typecheck
-      - run: npm run lint
-      - run: npm test
-        env:
-          CI: 'true'          # playwright.config.js 据此 workers=2、retries=1
+```
+checkout → setup-node@v4（Node 22，npm cache）→ npm ci
+        → playwright install --with-deps chromium
+        → npm run lint → npm run typecheck → npm test
+        → 上传 Playwright 报告（artifact，保留 7 天）
 ```
 
-要点：
+- 触发：push / PR 到 `main`，以及手动 `workflow_dispatch`；`timeout-minutes: 15`。
 - `npm ci` 只装 devDeps（含 `@playwright/test`），无运行时依赖。
 - `CI=true` 下 Playwright `workers: 2`、`retries: 1`（本地 `workers: 4`、`retries: 0`，见测试文档）。
-- 测试库由 `webServer` 命令自动重置，CI 不写开发库。
+- 测试库由 `webServer` 自动拉起并重置，CI 不写开发库。
+- **未包含 `format:check`**（原因见 §7.2）；lint / typecheck / test 三项均已纳入。
+- 仓库当前**无 git 远端**；配置已就绪，接上远端即生效。
 
 ### 7.4 多环境 .env 矩阵
-
-`.env` 不入库；`.env.example` 为样例（已存在，见根目录）。`load-env.js` 规则：**不覆盖**已在 `process.env` 中的变量（shell / Playwright 注入优先）；`NOVEL_NO_DOTENV=1` 彻底禁用（测试进程用它避免加载真实密钥）。
-
-| 变量 | 默认 | 说明 | 谁读 |
-|---|---|---|---|
-| `NOVEL_WEB_PORT` | 5175 | 静态页端口；**改端口必须用 `npm run dev`**，否则 API 白名单不感知 | web-server.js / novel-dev.sh / playwright |
-| `NOVEL_WEB_HOST` | 127.0.0.1 | 静态页监听地址；改 `0.0.0.0` 暴露局域网，自担风险 | web-server.js |
-| `NOVEL_API_PORT` | 8787 | API 端口 | novel-api.js / novel-dev.sh / playwright |
-| `NOVEL_API_HOST` | 127.0.0.1 | API 监听地址；改 `0.0.0.0` 暴露局域网 | novel-api.js |
-| `NOVEL_DB_PATH` | .data/novel-ai.sqlite | SQLite 路径（相对项目根解析）；测试指向 `.data/novel-test.sqlite` | novel-db.js / playwright |
-| `NOVEL_ALLOWED_ORIGINS` | http://127.0.0.1:5175,http://localhost:5175 | 跨域白名单，逗号分隔；缺 `NOVEL_WEB_PORT` 时自动追加 | novel-auth.js |
-| `NOVEL_AI_BASE_URL` | （空） | OpenAI 兼容地址；环境变量 > 项目库 `ai_base_url` | novel-ai-provider.js |
-| `NOVEL_AI_MODEL` | （空） | 模型名；环境变量 > 项目库 `ai_model` | novel-ai-provider.js |
-| `NOVEL_AI_API_KEY` | （空） | Bearer Token；项目库密钥 > 本变量 > 无（mock） | novel-secret.js |
-| `NOVEL_MASTER_KEY_PATH` | ~/.novel-ai/master.key | 主密钥路径；**勿指向项目内目录** | novel-secret.js |
-| `NOVEL_NO_DOTENV` | （空） | =1 禁用 .env 加载（测试隔离用） | load-env.js |
-| `NOVEL_SCHEDULER_DISABLED` | （空） | =1 禁用定时调度器 | novel-scheduler.js |
-| `NOVEL_SCHEDULER_INTERVAL_MS` | 30000 | 调度器扫描周期 | novel-scheduler.js |
-| `NOVEL_API_RELATIVE` / `NOVEL_PUBLIC_API_RELATIVE` | （空） | 反向代理/相对路径部署开关 | novel-api.js / web-server.js |
-| `NOVEL_DEPLOY_CONFIG` | （空） | 部署配置路径 | 部署模块 |
-
-环境矩阵示例：
-
-| 环境 | WEB | API | DB | 备注 |
-|---|---|---|---|---|
-| 本地开发 | 5175 | 8787 | .data/novel-ai.sqlite | `npm run dev` |
-| 测试（CI/本地） | 5176 | 8788 | .data/novel-test.sqlite | `npm test` 自动拉起 + 重置 |
-| 演示/内网 | 自定义 | 自定义 | 自定义 | 设 `NOVEL_ALLOWED_ORIGINS`；谨慎 `0.0.0.0` |
 
 ## 八、扩展点与现状边界
 
