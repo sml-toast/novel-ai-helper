@@ -43,7 +43,11 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
 
-  reporter: [['html', { outputFolder: 'test-results/playwright-report' }]],
+  // 注意：HTML 报告目录必须放在测试产物目录 test-results/ 之外，
+  // 否则 Playwright 会报 "HTML reporter output folder clashes with the tests
+  // output folder" 的 Configuration Error。报告落在仓库根的 playwright-report/，
+  // 已被 .gitignore 忽略；CI 上传路径在 ci.yml 中同步调整。
+  reporter: [['html', { outputFolder: 'playwright-report' }]],
 
   webServer: [
     {

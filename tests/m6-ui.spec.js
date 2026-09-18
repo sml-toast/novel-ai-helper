@@ -245,6 +245,10 @@ test.describe('M6 · 力导向图谱（F091）', () => {
       expect(res.status(), `补第 ${i} 个节点应成功`).toBe(201);
     }
 
+    // 清掉初始渲染留下的旧快照：否则下面 waitForFunction(done===true) 会立刻命中
+    // 点击 refresh-graph 之前的初始渲染（done 已是 true、nodes≈14），读到陈旧 perf
+    // 导致 perf.nodes 不超 16。CI 的 headless 时序下此竞态必现，本地偶发。
+    await page.evaluate(() => { window.__graphPerf = null; });
     await page.locator('[data-action="refresh-graph"]').click();
     // 收敛后才有确定坐标可读（window.__graphPerf 由 graph-view 暴露）
     await page.waitForFunction(() => window.__graphPerf && window.__graphPerf.done === true, null, { timeout: 15000 });
