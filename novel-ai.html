@@ -16,7 +16,7 @@
   <script>window.NOVEL_API_PORT = window.NOVEL_API_PORT || 8787;</script>
   <script type="module" src="./novel-ai.js"></script>
 </head>
-<body>
+<body class="forms-collapsed">
   <div class="app-shell">
     <aside class="sidebar" aria-label="项目与章节">
       <a class="brand" href="./index.html" aria-label="返回博客首页">
@@ -73,41 +73,61 @@
 
     <main class="workspace" aria-label="小说写作工作区">
       <header class="topbar">
-        <div>
-          <span class="eyebrow">AI Writing Copilot</span>
-          <h1>小说 AI 助手全栈产品原型</h1>
+        <div class="topbar-row">
+          <div>
+            <span class="eyebrow">AI Writing Copilot</span>
+            <h1>雾港星火 · 创作工作台</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="secondary-btn" type="button" data-open-panel="knowledge">知识库</button>
+            <button class="secondary-btn" type="button" data-open-panel="foreshadow">伏笔线索</button>
+            <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
+            <button class="secondary-btn" type="button" data-action="open-log">系统日志</button>
+            <details class="more-menu">
+              <summary class="secondary-btn more-sum">更多 ▾</summary>
+              <div class="more-pop">
+                <button class="secondary-btn" type="button" data-action="load-history">AI历史</button>
+                <button class="secondary-btn" type="button" data-action="load-audit">审计日志</button>
+              </div>
+            </details>
+            <button class="primary-btn" type="button" data-action="run-sync-ai">同步辅助</button>
+          </div>
         </div>
-        <div class="topbar-actions">
-          <button class="secondary-btn" type="button" data-open-panel="knowledge">知识库</button>
-          <!-- F084：伏笔与线索生命周期面板入口 -->
-          <button class="secondary-btn" type="button" data-open-panel="foreshadow">伏笔线索</button>
-          <button class="secondary-btn" type="button" data-open-panel="publish">发布计划</button>
-          <button class="secondary-btn" type="button" data-action="load-history">AI历史</button>
-          <button class="secondary-btn" type="button" data-action="load-audit">审计日志</button>
-          <button class="secondary-btn" type="button" data-action="open-log">系统日志</button>
-          <button class="primary-btn" type="button" data-action="run-sync-ai">同步辅助</button>
-        </div>
+        <nav class="workspace-nav" aria-label="页面分区导航">
+          <a class="nav-link active" href="#sec-write">写作</a>
+          <a class="nav-link" href="#sec-outline">大纲结构</a>
+          <a class="nav-link" href="#sec-graph">知识图谱</a>
+          <a class="nav-link" href="#sec-project">项目版本</a>
+          <a class="nav-link" href="#sec-dashboard">运营统计</a>
+          <a class="nav-link" href="#sec-config">AI配置</a>
+          <a class="nav-link" href="#sec-editorial">编辑部</a>
+          <a class="nav-link" href="#sec-story">设定库</a>
+          <details class="nav-more">
+            <summary>视图 ▾</summary>
+            <div class="nav-pop">
+              <button class="nav-compact" type="button" data-action="toggle-forms" aria-pressed="false" title="收起 / 展开各管理面板的录入表单">展开录入</button>
+              <button class="nav-compact" type="button" data-action="toggle-compact" aria-pressed="false" title="折叠辅助模块，专注写作">整理视图</button>
+            </div>
+          </details>
+        </nav>
       </header>
 
-      <section class="hero-grid" aria-label="核心能力概览">
-        <article class="hero-card gradient-card">
-          <span>今日写作目标</span>
-          <h2>完成第 12 章冲突爆点，并回收“黑潮钟声”伏笔。</h2>
-          <p>AI 已汇总前后文、角色动机、知识库线索与平台风险，准备辅助续写。</p>
-        </article>
-        <article class="hero-card">
-          <span>AI 状态</span>
-          <h3>OpenAI-compatible 网关</h3>
-          <p>baseURL / apiKey / model 由服务端托管，前端仅展示任务结果。</p>
-        </article>
-        <article class="hero-card">
-          <span>发布队列</span>
-          <h3>今晚 21:30</h3>
-          <p>第 10 章将推送至模拟平台，失败后自动重试 3 次。</p>
-        </article>
+      <section class="status-strip" aria-label="今日概览">
+        <div class="status-cell status-goal">
+          <span class="status-k">今日写作目标</span>
+          <p>完成第 12 章冲突爆点，并回收“黑潮钟声”伏笔。</p>
+        </div>
+        <div class="status-cell">
+          <span class="status-k">AI 状态</span>
+          <p>OpenAI-compatible 网关 · 服务端托管密钥</p>
+        </div>
+        <div class="status-cell">
+          <span class="status-k">发布队列</span>
+          <p>今晚 21:30 · 第 10 章推送模拟平台</p>
+        </div>
       </section>
 
-      <section class="editor-layout">
+      <section class="editor-layout" id="sec-write">
         <article class="editor-panel">
           <div class="editor-toolbar">
             <div>
@@ -121,7 +141,7 @@
                 <em id="sessionDelta">+0 字</em>
               </span>
             </div>
-          <div class="toolbar-actions">
+          <div class="toolbar-actions toolbar-primary">
               <!-- F086 大改前一键打快照（与版本面板「打快照」同入口） -->
               <button type="button" class="milestone-btn" data-action="create-milestone" title="命名留存当前版本，大改前先打点">★ 打快照</button>
               <button type="button" data-action="framework">框架提炼</button>
@@ -132,7 +152,15 @@
               <button type="button" data-action="continue-writing">续写建议</button>
               <button type="button" data-action="hook-boost">爆点强化</button>
               <button type="button" data-action="foreshadow">伏笔回收</button>
-              <!-- F084：从选中文字一键登记为伏笔（人工登记为主，AI 不自动建库） -->
+              <!-- F090：专注模式（Esc 退出）+ 编辑区字号/行宽（偏好持久化到 localStorage） -->
+              <button type="button" data-action="focus-toggle" title="专注模式：隐藏侧栏/面板/顶栏，只留编辑器；Esc 退出">专注模式</button>
+              <button type="button" data-action="font-dec" title="减小编辑区字号">A－</button>
+              <button type="button" data-action="font-inc" title="增大编辑区字号">A＋</button>
+              <button type="button" data-action="width-cycle" title="切换编辑区最大行宽（全宽/较宽/适中/窄幅）">行宽</button>
+            </div>
+            <details class="toolbar-more">
+              <summary class="toolbar-more-sum">更多写作工具 ▾</summary>
+              <div class="toolbar-actions toolbar-secondary">
               <button type="button" data-action="register-foreshadow" title="把编辑器中选中的文字登记为当前章节的伏笔">登记伏笔</button>
               <button type="button" data-action="platform-rewrite">平台改写</button>
               <button type="button" data-action="title-ai">标题生成</button>
@@ -149,12 +177,8 @@
               <button type="button" data-action="world-ai">世界观扩展</button>
               <button type="button" data-action="conflict-check">冲突校验</button>
               <button type="button" data-action="copyright-check">版权警示</button>
-              <!-- F090：专注模式（Esc 退出）+ 编辑区字号/行宽（偏好持久化到 localStorage） -->
-              <button type="button" data-action="focus-toggle" title="专注模式：隐藏侧栏/面板/顶栏，只留编辑器；Esc 退出">专注模式</button>
-              <button type="button" data-action="font-dec" title="减小编辑区字号">A－</button>
-              <button type="button" data-action="font-inc" title="增大编辑区字号">A＋</button>
-              <button type="button" data-action="width-cycle" title="切换编辑区最大行宽（全宽/较宽/适中/窄幅）">行宽</button>
-            </div>
+              </div>
+            </details>
           </div>
           <textarea id="chapterEditor" spellcheck="false" aria-label="章节正文编辑器"></textarea>
           <div class="editor-footer">
@@ -181,7 +205,8 @@
       </section>
 
       <!-- F083：大纲树 / 场景卡片 / 情节网格三视图（列表视图同时承担拖拽排序） -->
-      <section class="outline-layout" aria-label="大纲与结构视图">
+      <div class="zone-label" aria-hidden="true">创作结构</div>
+      <section class="outline-layout" id="sec-outline" aria-label="大纲与结构视图">
         <article class="panel outline-panel">
           <div class="panel-head large">
             <div>
@@ -201,30 +226,8 @@
         </article>
       </section>
 
-      <section class="feature-grid" aria-label="小说辅助功能">
-        <article class="feature-card">
-          <div class="icon" aria-hidden="true">🧠</div>
-          <h3>小说框架提炼</h3>
-          <p>从已有章节提取三幕结构、主线任务、反派压力与爽点节奏。</p>
-        </article>
-        <article class="feature-card">
-          <div class="icon" aria-hidden="true">🧩</div>
-          <h3>情节冲突校验</h3>
-          <p>检查角色动机、时间线、道具出现、伏笔回收与设定矛盾。</p>
-        </article>
-        <article class="feature-card">
-          <div class="icon" aria-hidden="true">👥</div>
-          <h3>人物关系设计</h3>
-          <p>维护角色立场、关系强度、秘密信息和成长线，辅助生成关系网。</p>
-        </article>
-        <article class="feature-card">
-          <div class="icon" aria-hidden="true">🔎</div>
-          <h3>网络文献搜索</h3>
-          <p>聚合网络资料、项目知识库和历史文档，为创作提供可追溯素材。</p>
-        </article>
-      </section>
 
-      <section class="graph-layout" aria-label="思维图与节点图">
+      <section class="graph-layout" id="sec-graph" aria-label="思维图与节点图">
         <article class="panel graph-panel">
           <div class="panel-head large">
             <div>
@@ -255,7 +258,8 @@
         </article>
       </section>
 
-      <section class="ops-layout" aria-label="项目管理与版本控制">
+      <div class="zone-label" aria-hidden="true">管理与配置</div>
+      <section class="ops-layout" id="sec-project" aria-label="项目管理与版本控制">
         <article class="panel ops-panel">
           <div class="panel-head large">
             <div>
@@ -301,7 +305,7 @@
         </article>
       </section>
 
-      <section class="ops-layout" aria-label="统计、AI历史与审计日志">
+      <section class="ops-layout" id="sec-dashboard" aria-label="统计、AI历史与审计日志">
         <article class="panel ops-panel">
           <div class="panel-head large">
             <div>
@@ -351,7 +355,7 @@
         </article>
       </section>
 
-      <section class="ops-layout" aria-label="AI配置、Prompt模板与导出">
+      <section class="ops-layout" id="sec-config" aria-label="AI配置、Prompt模板与导出">
         <article class="panel ops-panel">
           <div class="panel-head large">
             <div>
@@ -418,7 +422,7 @@
         </article>
       </section>
 
-      <section class="ops-layout" aria-label="章节批注、创作待办、术语表和敏感词检查">
+      <section class="ops-layout" id="sec-editorial" aria-label="章节批注、创作待办、术语表和敏感词检查">
         <article class="panel ops-panel">
           <div class="panel-head large">
             <div>
@@ -467,7 +471,7 @@
         </article>
       </section>
 
-      <section class="ops-layout" aria-label="角色档案、时间线、场景库和世界观设定">
+      <section class="ops-layout" id="sec-story" aria-label="角色档案、时间线、场景库和世界观设定">
         <article class="panel ops-panel">
           <div class="panel-head large">
             <div>
@@ -632,5 +636,6 @@
       </div>
     </div>
 
+  <script defer src="./js/nav.js"></script>
 </body>
 </html>

@@ -102,7 +102,7 @@ button { cursor: pointer; }
 .assistant-panel,
 .feature-card { border-radius: 24px; }
 
-.panel.compact { padding: 16px; }
+.panel.compact { padding: 18px; }
 
 .grow { flex: 1; min-height: 0; }
 
@@ -117,7 +117,7 @@ button { cursor: pointer; }
   gap: 16px;
 }
 
-.panel-head { margin-bottom: 14px; font-weight: 700; }
+.panel-head { margin-bottom: 16px; font-weight: 700; }
 
 .panel-head.large { align-items: flex-start; }
 
@@ -227,53 +227,82 @@ button { cursor: pointer; }
 
 .workspace {
   display: grid;
-  gap: 22px;
-  padding: 28px;
+  gap: 38px;
+  padding: 34px;
+  max-width: 1560px;
+  margin: 0 auto;
 }
 
 .topbar {
   position: sticky;
   top: 0;
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
   padding: 12px 0;
   background: linear-gradient(180deg, rgba(9, 10, 18, 0.95), rgba(9, 10, 18, 0.72));
   backdrop-filter: blur(16px);
 }
 
-.topbar h1 { font-size: clamp(28px, 4vw, 46px); letter-spacing: -0.05em; }
+.topbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.topbar h1 { font-size: clamp(23px, 2.4vw, 30px); letter-spacing: -0.03em; }
 
 .topbar-actions,
 .toolbar-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
-.hero-grid {
+/* 编辑器工具栏有 20+ 按钮，最容易挤成一团：标题与按钮换行、按钮更紧凑，
+   避免多列窄屏下按钮堆叠过高。 */
+.editor-toolbar { flex-wrap: wrap; }
+.editor-toolbar .toolbar-actions { flex: 1 1 100%; margin-top: 6px; gap: 8px; }
+.editor-toolbar .toolbar-actions button { padding: 8px 13px; font-size: 13px; }
+
+.status-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1.55fr) repeat(2, minmax(220px, 0.72fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
 }
 
-.hero-card { padding: 22px; }
-
-.hero-card h2,
-.hero-card h3 { margin: 10px 0; }
-
-.gradient-card {
-  background:
-    linear-gradient(135deg, rgba(139, 92, 246, 0.78), rgba(6, 182, 212, 0.5)),
-    rgba(255, 255, 255, 0.08);
+.status-cell {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.gradient-card p,
-.gradient-card span { color: rgba(255, 255, 255, 0.84); }
+.status-cell.status-goal {
+  border-color: rgba(139, 92, 246, 0.34);
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.22), rgba(34, 211, 238, 0.10));
+}
+
+.status-k {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.status-cell p { margin: 8px 0 0; font-size: 14px; line-height: 1.5; color: var(--text); }
 
 .editor-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 18px;
+  gap: 22px;
   align-items: stretch;
 }
 
 .editor-panel,
-.assistant-panel { padding: 20px; }
+.assistant-panel { padding: 24px; }
 
 .editor-toolbar { align-items: flex-start; margin-bottom: 16px; }
 
@@ -330,16 +359,6 @@ button { cursor: pointer; }
 
 .assist-card.danger { border-color: rgba(251, 113, 133, 0.48); }
 
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.feature-card { padding: 18px; }
-
-.feature-card h3 { margin: 14px 0 8px; }
-
 .icon {
   display: grid;
   width: 42px;
@@ -352,13 +371,13 @@ button { cursor: pointer; }
 .graph-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 18px;
+  gap: 22px;
 }
 
 .ops-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.85fr);
-  gap: 18px;
+  gap: 22px;
 }
 
 .graph-panel,
@@ -830,24 +849,39 @@ button.node { color: var(--text); cursor: pointer; }
 
 .publish-board { margin-top: 20px; }
 
+/* 笔记本档：1366px 及以下，编辑器两栏（左文 + 右 360px 助手）会让左侧
+   写作区变窄、20+ 按钮的工具栏重新挤成一团。先收成单栏，让工具栏独占整行。 */
+@media (max-width: 1366px) {
+  .editor-layout { grid-template-columns: 1fr; }
+  .assistant-panel { min-height: 420px; }
+}
+
+/* 中段断点：1180–1480px 这一档最常见于笔记本/台式机，
+   不对称的两栏（graph/ops 右侧固定 320px、hero 三栏）容易挤在一起，
+   这里先收成更宽松的单栏/两栏，避免“挤一块”。 */
+@media (max-width: 1480px) {
+  .graph-layout,
+  .ops-layout { grid-template-columns: 1fr; }
+}
+
 @media (max-width: 1180px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; }
   .editor-layout,
-  .hero-grid,
   .graph-layout,
   .ops-layout { grid-template-columns: 1fr; }
-  .feature-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 680px) {
   .workspace,
   .sidebar { padding: 16px; }
   .topbar,
+  .topbar-row,
   .editor-toolbar,
   .drawer-head,
   .editor-footer { align-items: flex-start; flex-direction: column; }
-  .feature-grid,
+  .workspace-nav { gap: 6px; }
+  .nav-compact { margin-left: 0; }
   .knowledge-columns,
   .search-box,
   .form-grid,
@@ -1157,8 +1191,7 @@ button.node { color: var(--text); cursor: pointer; }
 
 body.focus-mode .sidebar,
 body.focus-mode .topbar,
-body.focus-mode .hero-grid,
-body.focus-mode .feature-grid,
+body.focus-mode .status-strip,
 body.focus-mode .graph-layout,
 body.focus-mode .ops-layout,
 body.focus-mode .assistant-panel,
@@ -1375,3 +1408,145 @@ body.focus-mode .editor-paragraph-layer { display: block; }
   font-size: 14px; padding: 4px 2px;
 }
 .export-option input { width: auto; }
+
+/* ════════════════════ 写作页分区导航 + 分层优化 ════════════════════ */
+
+/* 分区锚点：吸顶导航较高，跳转后预留顶部空间避免被遮挡 */
+#sec-write,
+#sec-outline,
+#sec-graph,
+#sec-project,
+#sec-dashboard,
+#sec-config,
+#sec-editorial,
+#sec-story { scroll-margin-top: 172px; }
+
+/* 分区导航条 */
+.workspace-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.nav-link {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+
+.nav-link:hover { color: var(--text); border-color: rgba(167, 139, 250, 0.5); }
+
+.nav-link.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--primary), #06b6d4);
+  box-shadow: 0 8px 18px rgba(139, 92, 246, 0.26);
+}
+
+.nav-compact {
+  margin-left: auto;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease;
+}
+
+.nav-compact:hover { border-color: rgba(167, 139, 250, 0.5); }
+.nav-compact.active { color: var(--primary-strong); border-color: rgba(139, 92, 246, 0.55); }
+
+/* 编辑器工具栏分组：主行 + 「更多写作工具」次行，消除一条长龙 */
+.toolbar-secondary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.toolbar-label {
+  align-self: center;
+  margin-right: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+/* 录入表单默认收起（渐进式披露）：只藏输入框/长文本，动作按钮与结果列表保持可见 */
+body.forms-collapsed .ops-layout .form-grid,
+body.forms-collapsed .ops-layout .config-textarea,
+body.forms-collapsed .ops-layout .goal-box { display: none; }
+
+/* 分区小标题：制造清晰层级（创作结构 / 管理与配置） */
+.zone-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 -6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.zone-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+/* 顶栏动作按钮收紧，避免一行挤成一团 */
+.topbar-actions .secondary-btn,
+.topbar-actions .primary-btn { padding: 8px 13px; font-size: 13px; }
+
+/* 整理视图：折叠辅助模块，只留写作区（默认不启用，不影响测试） */
+body.compact-mode .status-strip,
+body.compact-mode .outline-layout,
+body.compact-mode .graph-layout,
+body.compact-mode .ops-layout { display: none; }
+
+/* 顶栏「更多」下拉：收起低频入口，首屏减负 */
+.more-menu { position: relative; }
+.more-sum { list-style: none; cursor: pointer; }
+.more-sum::-webkit-details-marker { display: none; }
+.more-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px; min-width: 132px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(15, 17, 28, 0.98); backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.more-pop .secondary-btn { width: 100%; justify-content: flex-start; }
+
+/* 编辑器「更多写作工具」默认收起，点击展开 */
+.toolbar-more { margin-top: 4px; }
+.toolbar-more-sum {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
+  border: 1px dashed var(--border); border-radius: 999px;
+  font-size: 13px; color: var(--muted); list-style: none; cursor: pointer; user-select: none;
+}
+.toolbar-more-sum::-webkit-details-marker { display: none; }
+.toolbar-more[open] .toolbar-more-sum { color: var(--text); border-style: solid; border-color: rgba(139, 92, 246, 0.4); }
+.toolbar-more[open] .toolbar-secondary { margin-top: 10px; }
+
+/* 导航「视图」下拉 */
+.nav-more { position: relative; }
+.nav-more > summary { list-style: none; cursor: pointer; padding: 6px 12px; border-radius: 999px; font-size: 13px; color: var(--muted); }
+.nav-more > summary::-webkit-details-marker { display: none; }
+.nav-more[open] > summary { color: var(--text); }
+.nav-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 40;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px; min-width: 120px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: rgba(15, 17, 28, 0.98); backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.nav-pop .nav-compact { width: 100%; margin-left: 0; justify-content: flex-start; }
