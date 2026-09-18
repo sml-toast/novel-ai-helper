@@ -1,0 +1,18 @@
+# Prettier 忽略清单
+# 目的：只格式化「源码」，不产生文档/生成物/锁文件的大规模无意义 diff。
+
+node_modules/
+.data/
+test-results/
+playwright-report/
+.workbuddy/
+
+# 文档与说明（用自然语言排版，交给人工，不交给 formatter）
+doc/
+*.md
+
+# 环境与锁文件
+.env
+.env.*
+!.env.example
+package-lock.json
