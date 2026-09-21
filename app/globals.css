@@ -2,15 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 让情绪光（--mood-h 色相）可被平滑过渡 —— 注册为可动画自定义属性 */
+/* 让情绪光（--mood-h 色相 / --mood-intensity 强度）可被平滑过渡 */
 @property --mood-h {
   syntax: "<number>";
   inherits: true;
   initial-value: 38;
 }
 
+@property --mood-intensity {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.4;
+}
+
 :root {
   --mood-h: 38;
+  --mood-intensity: 0.4;
 }
 
 html,
@@ -28,11 +35,11 @@ body {
   transition: --mood-h 1.2s ease;
 }
 
-/* 顶部情绪光晕：色相随正文情绪渐变 */
+/* 顶部情绪光晕：色相随正文情绪渐变，强度随设置 */
 .mood-glow {
   background: radial-gradient(
     120% 80% at 50% -10%,
-    hsl(var(--mood-h) 55% 60% / 0.4),
+    hsl(var(--mood-h) 55% 60% / var(--mood-intensity, 0.4)),
     transparent 62%
   );
   transition: background 1.2s ease;

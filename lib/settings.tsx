@@ -8,17 +8,21 @@ import {
   type ReactNode,
 } from "react";
 import {
-  DEFAULTS,
+  defaultSettings,
+  mergedConfig,
   STORAGE_KEY,
-  type EnabledMap,
   type FeatureId,
+  type SettingsState,
 } from "@/lib/settings-config";
 import { SettingsPanel } from "@/components/SettingsPanel";
 
 interface SettingsCtx {
-  enabled: EnabledMap;
-  setEnabled: (id: FeatureId, v: boolean) => void;
+  enabled: Record<FeatureId, boolean>;
   isEnabled: (id: FeatureId) => boolean;
+  setEnabled: (id: FeatureId, v: boolean) => void;
+  getConfig: <T = Record<string, string | number>>(id: FeatureId) => T;
+  setConfigValue: (id: FeatureId, key: string, value: string | number) => void;
+  hydrated: boolean;
   open: boolean;
   setOpen: (v: boolean) => void;
 }
@@ -32,7 +36,7 @@ export function useSettings(): SettingsCtx {
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [enabled, setEnabledState] = useState<EnabledMap>(DEFAULTS);
+  const [state, setState] = useState<SettingsState>(defaultSettings);
   const [open, setOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
@@ -40,8 +44,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<EnabledMap>;
-        setEnabledState({ ...DEFAULTS, ...parsed });
+        const parsed = JSON.parse(raw) as Partial<SettingsState>;
+        const base = defaultSettings();
+        setState({
+          enabled: { ...base.enabled, ...(parsed.enabled ?? {}) },
+          config: { ...base.config, ...(parsed.config ?? {}) },
+        });
       }
     } catch {
       /* 忽略损坏的本地设置 */
@@ -49,24 +57,49 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setHydrated(true);
   }, []);
 
+  function persist(next: SettingsState) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      /* 隐私模式等无法写入时静默 */
+    }
+  }
+
   function setEnabled(id: FeatureId, v: boolean) {
-    setEnabledState((prev) => {
-      const nextMap: EnabledMap = { ...prev, [id]: v };
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextMap));
-      } catch {
-        /* 隐私模式等无法写入时静默 */
-      }
-      return nextMap;
+    setState((prev) => {
+      const next: SettingsState = {
+        ...prev,
+        enabled: { ...prev.enabled, [id]: v },
+      };
+      persist(next);
+      return next;
+    });
+  }
+
+  function setConfigValue(id: FeatureId, key: string, value: string | number) {
+    setState((prev) => {
+      const next: SettingsState = {
+        ...prev,
+        config: {
+          ...prev.config,
+          [id]: { ...prev.config[id], [key]: value },
+        },
+      };
+      persist(next);
+      return next;
     });
   }
 
   return (
     <Ctx.Provider
       value={{
-        enabled,
+        enabled: state.enabled,
+        isEnabled: (id) => state.enabled[id],
         setEnabled,
-        isEnabled: (id) => enabled[id],
+        getConfig: (<T = Record<string, string | number>>(id: FeatureId) =>
+          mergedConfig(state, id) as unknown as T),
+        setConfigValue,
+        hydrated,
         open,
         setOpen,
       }}
@@ -76,8 +109,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       <SettingsPanel
         open={open}
         onClose={() => setOpen(false)}
-        enabled={enabled}
+        state={state}
         onToggle={setEnabled}
+        onConfigChange={setConfigValue}
         hydrated={hydrated}
       />
     </Ctx.Provider>

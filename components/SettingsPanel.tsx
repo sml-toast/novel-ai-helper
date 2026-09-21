@@ -2,20 +2,27 @@
 
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/cn";
-import { FEATURES, type EnabledMap, type FeatureId } from "@/lib/settings-config";
+import {
+  FEATURES,
+  type FeatureId,
+  type SettingsState,
+} from "@/lib/settings-config";
 import { Toggle } from "@/components/Toggle";
+import { SettingsField } from "@/components/SettingsField";
 
 export function SettingsPanel({
   open,
   onClose,
-  enabled,
+  state,
   onToggle,
+  onConfigChange,
   hydrated,
 }: {
   open: boolean;
   onClose: () => void;
-  enabled: EnabledMap;
+  state: SettingsState;
   onToggle: (id: FeatureId, v: boolean) => void;
+  onConfigChange: (id: FeatureId, key: string, value: string | number) => void;
   hydrated: boolean;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -52,7 +59,7 @@ export function SettingsPanel({
       <aside
         className={cn(
           "absolute inset-x-0 bottom-0 flex max-h-[82vh] flex-col rounded-t-3xl border border-white/60 bg-paper/95 p-6 shadow-paper backdrop-blur-xl transition-transform duration-300",
-          "md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:w-[400px] md:rounded-none md:rounded-l-3xl",
+          "md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:w-[420px] md:rounded-none md:rounded-l-3xl",
           open ? "translate-y-0" : "translate-y-full md:translate-x-full md:translate-y-0",
         )}
       >
@@ -78,23 +85,42 @@ export function SettingsPanel({
               <h3 className="mb-2 text-xs font-medium uppercase tracking-[0.2em] text-ink/40">
                 {group}
               </h3>
-              <div className="space-y-2">
-                {items.map((f) => (
-                  <div
-                    key={f.id}
-                    className="flex items-center justify-between gap-4 rounded-2xl border border-ink/10 bg-white/40 px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-ink">{f.title}</p>
-                      <p className="text-xs text-ink/45">{f.desc}</p>
+              <div className="space-y-3">
+                {items.map((f) => {
+                  const on = hydrated ? state.enabled[f.id] : f.defaultEnabled;
+                  const cfg = state.config[f.id] ?? {};
+                  return (
+                    <div
+                      key={f.id}
+                      className="rounded-2xl border border-ink/10 bg-white/40 px-4 py-3"
+                    >
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-ink">{f.title}</p>
+                          <p className="text-xs text-ink/45">{f.desc}</p>
+                        </div>
+                        <Toggle
+                          label={f.title}
+                          checked={on}
+                          onChange={(v) => onToggle(f.id, v)}
+                        />
+                      </div>
+
+                      {on && f.fields && (
+                        <div className="mt-4 space-y-4 border-t border-ink/10 pt-4">
+                          {f.fields.map((field) => (
+                            <SettingsField
+                              key={field.key}
+                              field={field}
+                              value={cfg[field.key] ?? field.default}
+                              onChange={(v) => onConfigChange(f.id, field.key, v)}
+                            />
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    <Toggle
-                      label={f.title}
-                      checked={hydrated ? enabled[f.id] : false}
-                      onChange={(v) => onToggle(f.id, v)}
-                    />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           ))}

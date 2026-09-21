@@ -18,6 +18,7 @@ export function CompanionPanel({
   response,
   notice,
   aiEnabled,
+  needsApiKey,
 }: {
   open: boolean;
   onClose: () => void;
@@ -26,6 +27,7 @@ export function CompanionPanel({
   response: string;
   notice: string | null;
   aiEnabled: boolean;
+  needsApiKey?: boolean;
 }) {
   return (
     <aside
@@ -56,6 +58,12 @@ export function CompanionPanel({
       {!aiEnabled && (
         <p className="mt-3 rounded-2xl border border-ochre/30 bg-ochre/5 px-4 py-3 text-sm text-ochre">
           墨笺的 AI 能力已关闭。到「系统设置 → AI 设置」开启后，她才能陪你续写、润色、找伏笔。
+        </p>
+      )}
+
+      {aiEnabled && needsApiKey && (
+        <p className="mt-3 rounded-2xl border border-ochre/30 bg-ochre/5 px-4 py-3 text-sm text-ochre">
+          已开启 AI，但还没填 API Key。到「系统设置 → AI 设置」填好密钥，墨笺才会用真实模型；现在点动作会走本地演示。
         </p>
       )}
 

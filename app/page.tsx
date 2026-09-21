@@ -6,6 +6,9 @@ import { CompanionPanel, type CompanionKind } from "@/components/CompanionPanel"
 import { SaveToast } from "@/components/SaveToast";
 import { useSettings } from "@/lib/settings";
 import { detectMood, moodHue, moodLabel } from "@/lib/mood";
+import { streamAi } from "@/lib/ai-client";
+import { getStore, type ManuscriptDoc } from "@/lib/storage";
+import type { AiConfig, DataConfig, MoodConfig } from "@/lib/settings-config";
 
 const SEED =
   "雨落了一整夜。她坐在窗边，想起很多年前那个同样潮湿的春天——那时他们还相信，所有的离别都只是暂时的。";
@@ -18,26 +21,70 @@ const CONTINUATIONS = [
 
 export default function Page() {
   const [text, setText] = useState(SEED);
+  const [title, setTitle] = useState("未命名");
   const [mood, setMood] = useState(detectMood(SEED));
   const [panelOpen, setPanelOpen] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [response, setResponse] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const thinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const createdAtRef = useRef<number>(Date.now());
 
-  const { isEnabled } = useSettings();
+  const { isEnabled, getConfig, hydrated } = useSettings();
   const aiEnabled = isEnabled("ai");
-  const backendEnabled = isEnabled("backend");
+  const moodEnabled = isEnabled("mood");
+  const moodCfg = getConfig<MoodConfig>("mood");
+  const moodIntensity = moodEnabled ? Number(moodCfg.intensity) : 0;
+  const aiCfg = getConfig("ai") as AiConfig;
+  const aiKeyMissing = aiEnabled && !String(aiCfg.apiKey).trim();
 
-  // 情绪光：随正文关键词实时渐变背景色温
+  // 情绪光：色相随正文关键词渐变；强度随设置
   useEffect(() => {
     const m = detectMood(text);
     setMood(m);
     document.documentElement.style.setProperty("--mood-h", String(moodHue(m)));
-  }, [text]);
+    document.documentElement.style.setProperty("--mood-intensity", String(moodIntensity));
+  }, [text, moodIntensity]);
+
+  // 初次加载（水合完成后），从数据层恢复上次稿子
+  useEffect(() => {
+    if (!hydrated || loaded) return;
+    const cfg = getConfig<DataConfig>("data");
+    getStore(cfg)
+      .load()
+      .then((doc: ManuscriptDoc | null) => {
+        if (doc) {
+          setText(doc.content);
+          setTitle(doc.title || "未命名");
+          createdAtRef.current = doc.createdAt ?? Date.now();
+        }
+        setLoaded(true);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, loaded]);
+
+  // 自动保存（防抖，静默）—— 写→存 闭环
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => {
+      const cfg = getConfig<DataConfig>("data");
+      const doc: ManuscriptDoc = {
+        id: "main",
+        title,
+        content: text,
+        createdAt: createdAtRef.current,
+        updatedAt: Date.now(),
+      };
+      getStore(cfg).save(doc).catch(() => {});
+    }, 1200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, title, loaded]);
 
   useEffect(() => {
     return () => {
@@ -55,10 +102,24 @@ export default function Page() {
 
   function onText(v: string) {
     setText(v);
-    triggerSave();
   }
 
-  // 本地演示模式：打字机效果，续写结果回写稿纸（backend 关闭时使用）
+  function saveNow() {
+    const cfg = getConfig<DataConfig>("data");
+    const doc: ManuscriptDoc = {
+      id: "main",
+      title,
+      content: text,
+      createdAt: createdAtRef.current,
+      updatedAt: Date.now(),
+    };
+    getStore(cfg)
+      .save(doc)
+      .then(() => triggerSave())
+      .catch(() => triggerSave());
+  }
+
+  // 本地演示模式：无 AI Key 或调用失败时的兜底
   function localAction(kind: CompanionKind) {
     if (!text.trim()) {
       setNotice("先写几句，墨笺才知道该陪你往哪走。");
@@ -89,8 +150,16 @@ export default function Page() {
     }, 700);
   }
 
-  // 后端模式：调用旧 node:http+SQLite 服务的 SSE 流式接口 /api/novel/ai/stream
-  async function callBackend(kind: CompanionKind) {
+  // AI 模式：调用用户自己配置的 OpenAI 兼容服务（流式）
+  async function callAi(kind: CompanionKind) {
+    const cfg = getConfig<AiConfig>("ai");
+    if (!String(cfg.apiKey).trim()) {
+      setNotice(
+        "墨笺还没有 AI 钥匙：到「系统设置 → AI 设置」填写 API Key 才能启用真实模型。已用本地演示代替。",
+      );
+      localAction(kind);
+      return;
+    }
     if (!text.trim()) {
       setNotice("先写几句，墨笺才知道该陪你往哪走。");
       return;
@@ -98,54 +167,24 @@ export default function Page() {
     setNotice(null);
     setStreaming(true);
     setResponse("");
+    let full = "";
     try {
-      const res = await fetch("/api/novel/ai/stream", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ taskType: kind, selectedText: text, targeted: false }),
+      await streamAi(cfg, kind, text, (d) => {
+        full += d;
+        setResponse(full);
       });
-      if (!res.ok || !res.body) throw new Error(`后端返回 ${res.status}`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let acc = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let sep: number;
-        while ((sep = buffer.indexOf("\n\n")) !== -1) {
-          const frame = buffer.slice(0, sep);
-          buffer = buffer.slice(sep + 2);
-          let event = "message";
-          let data = "";
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("event:")) event = line.slice(6).trim();
-            else if (line.startsWith("data:")) data += line.slice(5).trim();
-          }
-          if (!data) continue;
-          const payload = JSON.parse(data);
-          if (event === "delta") {
-            acc += payload.text || "";
-            setResponse(acc);
-          } else if (event === "error") {
-            throw new Error(payload.message || "后端返回错误");
-          }
-        }
-      }
       setStreaming(false);
+      if (kind === "continue") setText((t) => t + full);
     } catch (err) {
-      setStreaming(false);
       const msg = err instanceof Error ? err.message : String(err);
-      setNotice(`后端暂不可用（${msg}），已回退到本地演示。`);
+      setNotice(`AI 调用失败（${msg}），已回退本地演示。`);
       localAction(kind);
     }
   }
 
   function handleAction(kind: CompanionKind) {
     if (streaming) return;
-    if (backendEnabled) callBackend(kind);
+    if (aiEnabled) callAi(kind);
     else localAction(kind);
   }
 
@@ -160,9 +199,13 @@ export default function Page() {
       <header className="sticky top-0 z-20 -mx-4 mb-5 flex items-center justify-between rounded-2xl border border-white/40 bg-paper/60 px-4 py-3 backdrop-blur-md md:-mx-8 md:px-8">
         <div>
           <p className="text-xs uppercase tracking-[0.3em] text-ink/50">墨笺</p>
-          <h1 className="font-display text-xl text-ink md:text-2xl">
-            未命名 · 稿纸
-          </h1>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            aria-label="稿件标题"
+            className="w-44 bg-transparent font-display text-xl text-ink outline-none placeholder:text-ink/30 md:w-72 md:text-2xl"
+            placeholder="未命名"
+          />
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-2 rounded-full bg-ink/5 px-3 py-1.5 text-sm text-ink/70">
@@ -173,7 +216,7 @@ export default function Page() {
             此刻 · {moodLabel(mood)}
           </span>
           <button
-            onClick={triggerSave}
+            onClick={saveNow}
             className="hidden rounded-full border border-ochre/50 px-4 py-1.5 text-sm text-ochre transition hover:bg-ochre/10 md:inline-flex"
           >
             保存
@@ -197,6 +240,7 @@ export default function Page() {
           response={response}
           notice={notice}
           aiEnabled={aiEnabled}
+          needsApiKey={!!aiKeyMissing}
         />
       </div>
 
