@@ -1,6 +1,11 @@
 # 依赖
 node_modules/
 
+# Next.js 构建产物
+/.next/
+/out/
+next-env.d.ts
+
 # 数据库（运行时生成，首次启动自动建表）— 关键，否则 sqlite 会入库
 .data/
 
@@ -27,3 +32,6 @@ Thumbs.db
 
 # 日志
 *.log
+
+# TypeScript 增量编译产物
+*.tsbuildinfo

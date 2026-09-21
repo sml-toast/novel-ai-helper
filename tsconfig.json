@@ -1,33 +1,21 @@
 {
-  // Novel AI · 类型检查配置（零运行时依赖，仅用 devDependency typescript 做静态检查）
-  //
-  // 为什么 checkJs 默认 false：存量 4000+ 行无类型 JS，若直接全量开启会产生约 200 条错误，
-  // 让 CI 长期变红。这里采用 TypeScript 官方推荐的「增量迁移」策略：
-  //   1. 默认不检查（checkJs: false），`npm run typecheck` 保持绿色；
-  //   2. 谁要接入类型，就在目标文件首行加 `// @ts-check`，并尽量补充 JSDoc 注解；
-  //   3. 逐文件收紧，等覆盖率足够高后再考虑全局打开 checkJs 与 strict。
-  // tsconfig 支持 JSONC 注释，勿改成严格 JSON。
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
-    "checkJs": false,
-    "noEmit": true,
-    "strict": false,
-    "noImplicitAny": false,
     "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "forceConsistentCasingInFileNames": true,
-    "types": ["node"]
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{ "name": "next" }],
+    "paths": { "@/*": ["./*"] }
   },
-  "include": [
-    "server/**/*.js",
-    "js/**/*.js",
-    "tests/**/*.js",
-    "novel-ai.js",
-    "playwright.config.js"
-  ],
-  "exclude": ["node_modules", ".data", "test-results", "playwright-report", "doc"]
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", "legacy"]
 }

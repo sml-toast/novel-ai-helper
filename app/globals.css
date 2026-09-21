@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 让情绪光（--mood-h 色相）可被平滑过渡 —— 注册为可动画自定义属性 */
+@property --mood-h {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 38;
+}
+
+:root {
+  --mood-h: 38;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: #2b2420;
+  background-color: #efe2cd;
+  /* 暖纸微噪点纹理，营造纵深（绝无纯白/纯灰平铺） */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  background-attachment: fixed;
+  transition: --mood-h 1.2s ease;
+}
+
+/* 顶部情绪光晕：色相随正文情绪渐变 */
+.mood-glow {
+  background: radial-gradient(
+    120% 80% at 50% -10%,
+    hsl(var(--mood-h) 55% 60% / 0.4),
+    transparent 62%
+  );
+  transition: background 1.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .mood-glow {
+    transition: none !important;
+  }
+}
