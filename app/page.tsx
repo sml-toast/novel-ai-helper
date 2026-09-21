@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ManuscriptEditor } from "@/components/ManuscriptEditor";
 import { CompanionPanel, type CompanionKind } from "@/components/CompanionPanel";
 import { SaveToast } from "@/components/SaveToast";
+import { useSettings } from "@/lib/settings";
 import { detectMood, moodHue, moodLabel } from "@/lib/mood";
 
 const SEED =
@@ -26,6 +27,9 @@ export default function Page() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const thinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const { isEnabled } = useSettings();
+  const aiEnabled = isEnabled("ai");
 
   // 情绪光：随正文关键词实时渐变背景色温
   useEffect(() => {
@@ -131,6 +135,7 @@ export default function Page() {
           streaming={streaming}
           response={response}
           notice={notice}
+          aiEnabled={aiEnabled}
         />
       </div>
 

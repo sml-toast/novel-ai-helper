@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { SettingsProvider } from "@/lib/settings";
 
 export const metadata: Metadata = {
   title: "墨笺 · 小说写作工作台",
@@ -13,7 +14,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen font-serif text-ink antialiased">{children}</body>
+      <body className="min-h-screen font-serif text-ink antialiased">
+        <SettingsProvider>{children}</SettingsProvider>
+      </body>
     </html>
   );
 }

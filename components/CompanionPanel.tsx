@@ -17,6 +17,7 @@ export function CompanionPanel({
   streaming,
   response,
   notice,
+  aiEnabled,
 }: {
   open: boolean;
   onClose: () => void;
@@ -24,6 +25,7 @@ export function CompanionPanel({
   streaming: boolean;
   response: string;
   notice: string | null;
+  aiEnabled: boolean;
 }) {
   return (
     <aside
@@ -51,11 +53,17 @@ export function CompanionPanel({
         我不是工具，是坐在你身旁、陪你往下写的那个人。
       </p>
 
+      {!aiEnabled && (
+        <p className="mt-3 rounded-2xl border border-ochre/30 bg-ochre/5 px-4 py-3 text-sm text-ochre">
+          墨笺的 AI 能力已关闭。到「系统设置 → AI 设置」开启后，她才能陪你续写、润色、找伏笔。
+        </p>
+      )}
+
       <div className="mt-5 grid gap-2">
         {ACTIONS.map(([kind, label, hint]) => (
           <button
             key={kind}
-            disabled={streaming}
+            disabled={streaming || !aiEnabled}
             onClick={() => onAction(kind)}
             className="group flex items-center justify-between rounded-2xl border border-ink/10 bg-white/40 px-4 py-3 text-left transition hover:border-ochre/50 hover:bg-ochre/5 disabled:opacity-50"
           >
