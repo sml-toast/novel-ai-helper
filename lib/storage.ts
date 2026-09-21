@@ -1,7 +1,6 @@
-// 稿子数据层：统一的 Store 接口。
-// 默认实现 = 本机浏览器（默认数据定义：单篇稿子 标题+正文+时间戳）；
-// 自定义后端 = 按用户给的地址做 GET/PUT /manuscript 的 REST 适配器。
-// 写→存→刷新恢复 形成闭环，且不依赖任何被放弃的旧代码。
+// 稿子数据层：统一的 Store 接口（浏览器侧）。
+// 实际读写由服务端 /api/storage 完成（md / 本地 SQLite / MySQL / WebDAV 都在服务器上），
+// 浏览器只把「配置 + 稿件」发给自己的服务。写→存→刷新恢复 形成闭环。
 
 import type { DataConfig } from "@/lib/settings-config";
 
@@ -18,65 +17,30 @@ export interface Store {
   save(doc: ManuscriptDoc): Promise<void>;
 }
 
-const LOCAL_KEY = "mojian.manuscript.v1";
+class ApiStore implements Store {
+  constructor(private cfg: DataConfig) {}
 
-class LocalStore implements Store {
-  async load(): Promise<ManuscriptDoc | null> {
-    try {
-      const raw = localStorage.getItem(LOCAL_KEY);
-      return raw ? (JSON.parse(raw) as ManuscriptDoc) : null;
-    } catch {
-      return null;
-    }
-  }
-  async save(doc: ManuscriptDoc): Promise<void> {
-    try {
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(doc));
-    } catch {
-      /* 隐私模式等无法写入时静默 */
-    }
-  }
-}
-
-class RemoteStore implements Store {
-  constructor(
-    private baseUrl: string,
-    private token: string,
-  ) {}
-
-  private endpoint() {
-    return this.baseUrl.replace(/\/+$/, "") + "/manuscript";
-  }
-
-  private headers(): Record<string, string> {
-    const h: Record<string, string> = { "content-type": "application/json" };
-    if (this.token) h["authorization"] = `Bearer ${this.token}`;
-    return h;
-  }
-
-  async load(): Promise<ManuscriptDoc | null> {
-    try {
-      const res = await fetch(this.endpoint(), { headers: this.headers() });
-      if (!res.ok) return null;
-      return (await res.json()) as ManuscriptDoc;
-    } catch {
-      return null;
-    }
-  }
-
-  async save(doc: ManuscriptDoc): Promise<void> {
-    const res = await fetch(this.endpoint(), {
-      method: "PUT",
-      headers: this.headers(),
-      body: JSON.stringify(doc),
+  private async call(action: "save" | "load", doc?: ManuscriptDoc) {
+    const res = await fetch("/api/storage", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, config: this.cfg, doc }),
     });
-    if (!res.ok) throw new Error(`后端返回 ${res.status}`);
+    if (!res.ok) throw new Error(`存储服务返回 ${res.status}`);
+    return (await res.json()) as { ok?: boolean; doc?: ManuscriptDoc; error?: string };
+  }
+
+  async load(): Promise<ManuscriptDoc | null> {
+    const data = await this.call("load");
+    return data.doc ?? null;
+  }
+
+  async save(doc: ManuscriptDoc): Promise<void> {
+    const data = await this.call("save", doc);
+    if (!data || data.ok === false) throw new Error(data?.error || "保存失败");
   }
 }
 
 export function getStore(cfg: DataConfig): Store {
-  if (cfg.mode === "custom" && cfg.customUrl.trim()) {
-    return new RemoteStore(cfg.customUrl.trim(), cfg.token.trim());
-  }
-  return new LocalStore();
+  return new ApiStore(cfg);
 }

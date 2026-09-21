@@ -20,8 +20,8 @@ interface SettingsCtx {
   enabled: Record<FeatureId, boolean>;
   isEnabled: (id: FeatureId) => boolean;
   setEnabled: (id: FeatureId, v: boolean) => void;
-  getConfig: <T = Record<string, string | number>>(id: FeatureId) => T;
-  setConfigValue: (id: FeatureId, key: string, value: string | number) => void;
+  getConfig: <T = Record<string, string | number | boolean>>(id: FeatureId) => T;
+  setConfigValue: (id: FeatureId, key: string, value: string | number | boolean) => void;
   hydrated: boolean;
   open: boolean;
   setOpen: (v: boolean) => void;
@@ -76,7 +76,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     });
   }
 
-  function setConfigValue(id: FeatureId, key: string, value: string | number) {
+  function setConfigValue(
+    id: FeatureId,
+    key: string,
+    value: string | number | boolean,
+  ) {
     setState((prev) => {
       const next: SettingsState = {
         ...prev,

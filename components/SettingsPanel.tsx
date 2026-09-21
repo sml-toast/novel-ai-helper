@@ -22,7 +22,7 @@ export function SettingsPanel({
   onClose: () => void;
   state: SettingsState;
   onToggle: (id: FeatureId, v: boolean) => void;
-  onConfigChange: (id: FeatureId, key: string, value: string | number) => void;
+  onConfigChange: (id: FeatureId, key: string, value: string | number | boolean) => void;
   hydrated: boolean;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -87,8 +87,17 @@ export function SettingsPanel({
               </h3>
               <div className="space-y-3">
                 {items.map((f) => {
-                  const on = hydrated ? state.enabled[f.id] : f.defaultEnabled;
+                  const showToggle = f.showToggle !== false;
+                  const on = showToggle
+                    ? hydrated
+                      ? state.enabled[f.id]
+                      : f.defaultEnabled
+                    : true; // showToggle=false 的核心功能始终开启
                   const cfg = state.config[f.id] ?? {};
+                  // 条件显示：依赖字段等于指定值才渲染（如 MySQL 字段只在选中 MySQL 时出现）
+                  const visibleFields = (f.fields ?? []).filter(
+                    (fd) => !fd.showIf || cfg[fd.showIf.key] === fd.showIf.value,
+                  );
                   return (
                     <div
                       key={f.id}
@@ -99,16 +108,18 @@ export function SettingsPanel({
                           <p className="text-ink">{f.title}</p>
                           <p className="text-xs text-ink/45">{f.desc}</p>
                         </div>
-                        <Toggle
-                          label={f.title}
-                          checked={on}
-                          onChange={(v) => onToggle(f.id, v)}
-                        />
+                        {showToggle && (
+                          <Toggle
+                            label={f.title}
+                            checked={on}
+                            onChange={(v) => onToggle(f.id, v)}
+                          />
+                        )}
                       </div>
 
-                      {on && f.fields && (
+                      {on && visibleFields.length > 0 && (
                         <div className="mt-4 space-y-4 border-t border-ink/10 pt-4">
-                          {f.fields.map((field) => (
+                          {visibleFields.map((field) => (
                             <SettingsField
                               key={field.key}
                               field={field}

@@ -1,6 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/cn";
+import { Toggle } from "@/components/Toggle";
 import type { FieldDef } from "@/lib/settings-config";
 
 export function SettingsField({
@@ -9,10 +10,27 @@ export function SettingsField({
   onChange,
 }: {
   field: FieldDef;
-  value: string | number;
-  onChange: (v: string | number) => void;
+  value: string | number | boolean;
+  onChange: (v: string | number | boolean) => void;
 }) {
   const id = `field-${field.key}`;
+
+  if (field.type === "toggle") {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <span className="text-sm text-ink">{field.label}</span>
+          {field.hint && <p className="mt-0.5 text-xs text-ink/40">{field.hint}</p>}
+        </div>
+        <Toggle
+          label={field.label}
+          checked={Boolean(value)}
+          onChange={(v) => onChange(v)}
+        />
+      </div>
+    );
+  }
+
   return (
     <label htmlFor={id} className="block">
       <div className="flex items-baseline justify-between gap-3">
