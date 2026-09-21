@@ -30,6 +30,7 @@ export default function Page() {
 
   const { isEnabled } = useSettings();
   const aiEnabled = isEnabled("ai");
+  const backendEnabled = isEnabled("backend");
 
   // 情绪光：随正文关键词实时渐变背景色温
   useEffect(() => {
@@ -57,8 +58,8 @@ export default function Page() {
     triggerSave();
   }
 
-  function handleAction(kind: CompanionKind) {
-    if (streaming) return;
+  // 本地演示模式：打字机效果，续写结果回写稿纸（backend 关闭时使用）
+  function localAction(kind: CompanionKind) {
     if (!text.trim()) {
       setNotice("先写几句，墨笺才知道该陪你往哪走。");
       return;
@@ -86,6 +87,66 @@ export default function Page() {
         }
       }, 28);
     }, 700);
+  }
+
+  // 后端模式：调用旧 node:http+SQLite 服务的 SSE 流式接口 /api/novel/ai/stream
+  async function callBackend(kind: CompanionKind) {
+    if (!text.trim()) {
+      setNotice("先写几句，墨笺才知道该陪你往哪走。");
+      return;
+    }
+    setNotice(null);
+    setStreaming(true);
+    setResponse("");
+    try {
+      const res = await fetch("/api/novel/ai/stream", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ taskType: kind, selectedText: text, targeted: false }),
+      });
+      if (!res.ok || !res.body) throw new Error(`后端返回 ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let acc = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          let event = "message";
+          let data = "";
+          for (const line of frame.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (!data) continue;
+          const payload = JSON.parse(data);
+          if (event === "delta") {
+            acc += payload.text || "";
+            setResponse(acc);
+          } else if (event === "error") {
+            throw new Error(payload.message || "后端返回错误");
+          }
+        }
+      }
+      setStreaming(false);
+    } catch (err) {
+      setStreaming(false);
+      const msg = err instanceof Error ? err.message : String(err);
+      setNotice(`后端暂不可用（${msg}），已回退到本地演示。`);
+      localAction(kind);
+    }
+  }
+
+  function handleAction(kind: CompanionKind) {
+    if (streaming) return;
+    if (backendEnabled) callBackend(kind);
+    else localAction(kind);
   }
 
   return (
